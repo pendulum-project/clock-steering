@@ -19,6 +19,7 @@ pub struct Timestamp {
     pub subnanos: u32,
 }
 
+/// Indicate whether a leap second must be applied
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
 pub enum LeapIndicator {
     /// No leap second warning
@@ -32,6 +33,7 @@ pub enum LeapIndicator {
     Unknown,
 }
 
+/// Trait for reading information from and modifying an OS clock
 pub trait Clock {
     type Error: std::error::Error;
 
@@ -47,7 +49,7 @@ pub trait Clock {
     /// Change the frequency of the clock, returning the time at which the
     /// change was applied. The unit of the input is seconds (of drift) per
     /// second.
-    fn set_frequency(&self, frequency: f64, hold: HoldFrequency) -> Result<Timestamp, Self::Error>;
+    fn set_frequency(&self, frequency: f64) -> Result<Timestamp, Self::Error>;
 
     /// Change the current time of the clock by offset. Returns the time at
     /// which the change was applied.
@@ -64,10 +66,4 @@ pub trait Clock {
         estimated_error: Duration,
         maximum_error: Duration,
     ) -> Result<(), Self::Error>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HoldFrequency {
-    Disable = 0,
-    Enable = 1,
 }

@@ -1,6 +1,7 @@
-use crate::{Clock, HoldFrequency, LeapIndicator, Timestamp};
+use crate::{Clock, LeapIndicator, Timestamp};
 use std::time::Duration;
 
+/// A Unix OS clock
 #[derive(Debug, Clone, Copy)]
 pub struct UnixClock {
     clock: libc::clockid_t,
@@ -199,11 +200,7 @@ impl UnixClock {
     ///
     /// For example, if the clock is at 10.0 mhz, but should run at 10.1 mhz,
     /// then the frequency_multiplier should be 1.01.
-    pub fn adjust_frequency(
-        &mut self,
-        frequency_multiplier: f64,
-        hold: HoldFrequency,
-    ) -> Result<Timestamp, Error> {
+    pub fn adjust_frequency(&mut self, frequency_multiplier: f64) -> Result<Timestamp, Error> {
         let mut timex = EMPTY_TIMEX;
         self.adjtime(&mut timex)?;
 
@@ -229,7 +226,7 @@ impl UnixClock {
         // percentage to the ppm again and then negating it.
         let new_ppm = -((new_frequency_multiplier - 1.0) * M);
 
-        self.set_frequency(new_ppm, hold)
+        self.set_frequency(new_ppm)
     }
 
     /// Enable the kernel phase-locked loop (PLL). This is a feature used by the standard NTP
@@ -293,30 +290,15 @@ impl Clock for UnixClock {
         Ok(current_time_timespec(timespec, Precision::Nano))
     }
 
-    fn set_frequency(&self, frequency: f64, hold: HoldFrequency) -> Result<Timestamp, Self::Error> {
+    fn set_frequency(&self, frequency: f64) -> Result<Timestamp, Self::Error> {
         let mut timex = EMPTY_TIMEX;
 
-        // set the frequency and status (because ADJ_FREQHOLD)
-        timex.modes = match hold {
-            HoldFrequency::Enable => libc::MOD_FREQUENCY | libc::MOD_STATUS,
-            HoldFrequency::Disable => libc::MOD_FREQUENCY,
-        };
+        // set the frequency
+        timex.modes = libc::MOD_FREQUENCY;
 
         // NTP Kapi expects frequency adjustment in units of 2^-16 ppm
         // but our input is in units of seconds drift per second, so convert.
         timex.freq = (frequency * 65536e6) as libc::c_long;
-
-        // Hold frequency. Normally adjustments made via ADJ_OFFSET result in dampened
-        // frequency adjustments also being made. So a single call corrects the
-        // current offset, but as offsets in the same direction
-        // are made repeatedly, the small frequency adjustments will accumulate to fix
-        // the long-term skew.
-        //
-        // This flag prevents the small frequency adjustment from being made when
-        // correcting for an ADJ_OFFSET value.
-        //
-        // NOTE: the status field is ignored if hold == HoldFrequency::Disable
-        timex.status |= libc::STA_FREQHOLD;
 
         self.adjtime(&mut timex)?;
         self.extract_current_time(&timex)
@@ -349,6 +331,7 @@ impl Clock for UnixClock {
     }
 }
 
+/// Errors that can be thrown by modifying a unix clock
 #[derive(Debug, Copy, Clone, thiserror::Error, PartialEq, Eq, Hash)]
 pub enum Error {
     /// Insufficient permissions to interact with the clock.
