@@ -153,7 +153,7 @@ impl UnixClock {
     }
 
     #[cfg_attr(target_os = "linux", allow(unused))]
-    fn step_clock_timespec(&self, offset: Duration) -> Result<Timestamp, Error> {
+    fn step_clock_by_timespec(&self, offset: Duration) -> Result<Timestamp, Error> {
         let offset_secs = offset.as_secs();
         let offset_nanos = offset.subsec_nanos();
 
@@ -171,17 +171,41 @@ impl UnixClock {
         Ok(current_time_timespec(timespec, Precision::Nano))
     }
 
-    #[cfg(target_os = "linux")]
-    fn step_clock_timex(&self, offset: Duration) -> Result<Timestamp, Error> {
-        let mut timex = libc::timex {
-            modes: libc::ADJ_SETOFFSET | libc::ADJ_NANO,
-            time: libc::timeval {
-                tv_sec: offset.as_secs() as _,
-                tv_usec: offset.subsec_nanos() as libc::suseconds_t,
-            },
+    fn error_estimate_timex(est_error: Duration, max_error: Duration) -> libc::timex {
+        let modes = libc::MOD_ESTERROR | libc::MOD_MAXERROR;
+
+        // these fields are always in microseconds
+        let esterror = est_error.as_nanos() as libc::c_long / 1000;
+        let maxerror = max_error.as_nanos() as libc::c_long / 1000;
+
+        libc::timex {
+            modes,
+            esterror,
+            maxerror,
             ..EMPTY_TIMEX
+        }
+    }
+
+    #[cfg_attr(not(target_os = "linux"), allow(unused))]
+    fn step_clock_timex(offset: Duration) -> libc::timex {
+        // we provide the offset in nanoseconds
+        let modes = libc::ADJ_SETOFFSET | libc::ADJ_NANO;
+
+        let time = libc::timeval {
+            tv_sec: offset.as_secs() as _,
+            tv_usec: offset.subsec_nanos() as libc::suseconds_t,
         };
 
+        libc::timex {
+            modes,
+            time,
+            ..EMPTY_TIMEX
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn step_clock_by_timex(&self, offset: Duration) -> Result<Timestamp, Error> {
+        let mut timex = Self::step_clock_timex(offset);
         self.adjtime(&mut timex)?;
         self.extract_current_time(&timex)
     }
@@ -338,7 +362,7 @@ impl Clock for UnixClock {
     fn resolution(&self) -> Result<Timestamp, Self::Error> {
         let mut timespec = EMPTY_TIMESPEC;
 
-        cerr(unsafe { libc::clock_gettime(self.clock, &mut timespec) })?;
+        cerr(unsafe { libc::clock_getres(self.clock, &mut timespec) })?;
 
         Ok(current_time_timespec(timespec, Precision::Nano))
     }
@@ -351,7 +375,7 @@ impl Clock for UnixClock {
 
     #[cfg(target_os = "linux")]
     fn step_clock(&self, offset: Duration) -> Result<Timestamp, Self::Error> {
-        self.step_clock_timex(offset)
+        self.step_clock_by_timex(offset)
     }
 
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
@@ -368,13 +392,7 @@ impl Clock for UnixClock {
         est_error: Duration,
         max_error: Duration,
     ) -> Result<(), Self::Error> {
-        let mut timex = EMPTY_TIMEX;
-        timex.modes = libc::MOD_ESTERROR | libc::MOD_MAXERROR;
-
-        // these fields are always in microseconds
-        timex.esterror = est_error.as_nanos() as libc::c_long / 1000;
-        timex.maxerror = max_error.as_nanos() as libc::c_long / 1000;
-
+        let mut timex = Self::error_estimate_timex(est_error, max_error);
         Error::ignore_not_supported(self.adjtime(&mut timex))
     }
 }
@@ -703,5 +721,43 @@ mod tests {
         let new_frequency = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier).freq;
 
         assert_eq!(new_frequency, -((500 << 16) - 1));
+    }
+
+    #[test]
+    fn test_step_clock() {
+        let offset = Duration::from_secs_f64(1.2);
+        let timex = UnixClock::step_clock_timex(offset);
+
+        assert_eq!(timex.modes, libc::ADJ_SETOFFSET | libc::ADJ_NANO);
+
+        assert_eq!(timex.time.tv_sec, 1);
+        assert_eq!(timex.time.tv_usec, 200_000_000);
+    }
+
+    #[test]
+    fn test_error_estimate() {
+        let est_error = Duration::from_secs_f64(0.5);
+        let max_error = Duration::from_secs_f64(1.2);
+        let timex = UnixClock::error_estimate_timex(est_error, max_error);
+
+        assert_eq!(timex.modes, libc::MOD_ESTERROR | libc::MOD_MAXERROR);
+
+        // these fields are always in microseconds
+        assert_eq!(timex.esterror, 500_000);
+        assert_eq!(timex.maxerror, 1_200_000);
+    }
+
+    #[test]
+    fn test_now() {
+        let resolution = UnixClock::CLOCK_REALTIME.now().unwrap();
+
+        assert_ne!(resolution, Timestamp::default());
+    }
+
+    #[test]
+    fn test_resolution() {
+        let resolution = UnixClock::CLOCK_REALTIME.resolution().unwrap();
+
+        assert_ne!(resolution, Timestamp::default());
     }
 }
