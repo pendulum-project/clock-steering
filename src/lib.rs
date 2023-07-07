@@ -4,9 +4,7 @@
 use std::time::Duration;
 
 #[cfg(unix)]
-mod unix;
-#[cfg(unix)]
-pub use unix::{Error, UnixClock};
+pub mod unix;
 
 /// A moment in time.
 ///
@@ -46,13 +44,14 @@ pub trait Clock {
     /// unavailable.
     fn resolution(&self) -> Result<Timestamp, Self::Error>;
 
-    /// Change the frequency of the clock, returning the time at which the
-    /// change was applied. The unit of the input is seconds (of drift) per
-    /// second.
+    /// Change the frequency of the clock.
+    /// Returns the time at which the change was applied.
+    ///
+    /// The unit of the input is seconds (of drift) per second.
     fn set_frequency(&self, frequency: f64) -> Result<Timestamp, Self::Error>;
 
-    /// Change the current time of the clock by offset. Returns the time at
-    /// which the change was applied.
+    /// Change the current time of the clock by an offset.
+    /// Returns the time at which the change was applied.
     fn step_clock(&self, offset: Duration) -> Result<Timestamp, Self::Error>;
 
     /// Change the indicators for upcoming leap seconds.

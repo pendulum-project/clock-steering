@@ -1,5 +1,5 @@
 use crate::{Clock, LeapIndicator, Timestamp};
-use std::time::Duration;
+use std::{os::fd::AsRawFd, path::Path, time::Duration};
 
 /// A Unix OS clock
 #[derive(Debug, Clone, Copy)]
@@ -8,9 +8,48 @@ pub struct UnixClock {
 }
 
 impl UnixClock {
+    /// The standard realtime clock on unix systems.
+    ///
+    /// ```no_run
+    /// use clock_steering::{Clock, unix::UnixClock};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let clock = UnixClock::CLOCK_REALTIME;
+    ///     let now = clock.now()?;
+    ///
+    ///     println!("{now:?}");
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub const CLOCK_REALTIME: Self = UnixClock {
         clock: libc::CLOCK_REALTIME,
     };
+
+    /// Open a clock device.
+    ///
+    /// ```no_run
+    /// use clock_steering::{Clock, unix::UnixClock};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let clock = UnixClock::open("/dev/ptp0")?;
+    ///     let now = clock.now()?;
+    ///
+    ///     println!("{now:?}");
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        Ok(Self::safe_from_raw_fd(file.as_raw_fd()))
+    }
+
+    fn safe_from_raw_fd(fd: std::os::fd::RawFd) -> Self {
+        let clock = ((!(fd as libc::clockid_t)) << 3) | 3;
+
+        Self { clock }
+    }
 
     fn clock_adjtime(&self, timex: &mut libc::timex) -> Result<(), Error> {
         // We don't care about the time status, so the non-error
@@ -66,6 +105,8 @@ impl UnixClock {
     }
 
     /// Adjust the clock state with a [`libc::timex`] specifying the desired changes.
+    ///
+    /// This is a lowlevel function. If possible, use more specialized (trait) methods.
     ///
     /// Note that [`libc::timex`] has a different layout between different operating systems, and
     /// not all fields are available on all operating systems. Keep this in mind when writing
@@ -132,14 +173,11 @@ impl UnixClock {
 
     #[cfg(target_os = "linux")]
     fn step_clock_timex(&self, offset: Duration) -> Result<Timestamp, Error> {
-        let secs = offset.as_secs();
-        let nanos = offset.subsec_nanos();
-
         let mut timex = libc::timex {
-            modes: libc::ADJ_SETOFFSET | libc::MOD_NANO,
+            modes: libc::ADJ_SETOFFSET | libc::ADJ_NANO,
             time: libc::timeval {
-                tv_sec: secs as _,
-                tv_usec: nanos as libc::suseconds_t,
+                tv_sec: offset.as_secs() as _,
+                tv_usec: offset.subsec_nanos() as libc::suseconds_t,
             },
             ..EMPTY_TIMEX
         };
@@ -199,56 +237,20 @@ impl UnixClock {
     /// [`UnixClock::set_frequency`].
     ///
     /// For example, if the clock is at 10.0 mhz, but should run at 10.1 mhz,
-    /// then the frequency_multiplier should be 1.01.
+    /// then the frequency_multiplier should be 1.01. In practice, the multiplier is usually much
+    /// smaller.
+    ///
+    /// Returns the time at which the change was applied.
     pub fn adjust_frequency(&mut self, frequency_multiplier: f64) -> Result<Timestamp, Error> {
         let mut timex = EMPTY_TIMEX;
         self.adjtime(&mut timex)?;
 
-        const M: f64 = 1_000_000.0;
-
-        // In struct timex, freq, ppsfreq, and stabil are ppm (parts per million) with a
-        // 16-bit fractional part, which means that a value of 1 in one of those fields
-        // actually means 2^-16 ppm, and 2^16=65536 is 1 ppm.  This is the case for both
-        // input values (in the case of freq) and output values.
-        let current_ppm = (timex.freq >> 16) as f64 + ((timex.freq & 0xffff) as f64 / 65536.0);
-
-        // we need to recover the current frequency multiplier from the PPM value.
-        // The ppm is an offset from the main frequency, so it's the base +- the ppm
-        // expressed as a percentage. Ppm is in the opposite direction from the
-        // speed factor. A postive ppm means the clock is running slower, so we use its
-        // negative.
-        let current_frequency_multiplier = 1.0 - (current_ppm / M);
-
-        // Now multiply the frequencies
-        let new_frequency_multiplier = current_frequency_multiplier * frequency_multiplier;
-
-        // Get back the new ppm value by subtracting the 1.0 base from it, changing the
-        // percentage to the ppm again and then negating it.
-        let new_ppm = -((new_frequency_multiplier - 1.0) * M);
-
-        self.set_frequency(new_ppm)
-    }
-
-    /// Enable the kernel phase-locked loop (PLL). This is a feature used by the standard NTP
-    /// algorithm. Other clock discipline algorithms (custom NTP, PTP) should not enable this
-    /// setting.
-    pub fn enable_kernel_ntp_algorithm(&self) -> Result<(), Error> {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = Self::adjust_frequency_timex(timex.freq, frequency_multiplier);
         self.adjtime(&mut timex)?;
-
-        // We are setting the status bits
-        timex.modes = libc::MOD_STATUS;
-
-        // Enable the kernel phase locked loop
-        timex.status |= libc::STA_PLL;
-
-        // Disable the frequency locked loop; disable pps input based time and frequency control
-        timex.status &= !(libc::STA_FLL | libc::STA_PPSTIME | libc::STA_PPSFREQ);
-
-        self.adjtime(&mut timex)
+        self.extract_current_time(&timex)
     }
 
-    /// Disable all kernel clock discipline. It is all your responsibility now.
+    /// Disable all standard NTP kernel clock discipline. It is all your responsibility now.
     ///
     /// The disabled settings are:
     ///
@@ -268,6 +270,57 @@ impl UnixClock {
 
         // ignore if we cannot disable the kernel time control loops (e.g. external clocks)
         Error::ignore_not_supported(self.adjtime(&mut timex))
+    }
+
+    fn adjust_frequency_timex(frequency: libc::c_long, frequency_multiplier: f64) -> libc::timex {
+        const M: f64 = 1_000_000.0;
+
+        // In struct timex, freq, ppsfreq, and stabil are ppm (parts per million) with a
+        // 16-bit fractional part, which means that a value of 1 in one of those fields
+        // actually means 2^-16 ppm, and 2^16=65536 is 1 ppm.  This is the case for both
+        // input values (in the case of freq) and output values.
+        let current_ppm = frequency as f64 / 65536.0;
+
+        // we need to recover the current frequency multiplier from the PPM value.
+        // The ppm is an offset from the main frequency, so it's the base +- the ppm
+        // expressed as a percentage. PPM is in the opposite direction from the
+        // speed factor. A postive ppm means the clock is running slower, so we use its
+        // negative.
+        let current_frequency_multiplier = 1.0 + (-current_ppm / M);
+
+        // Now multiply the frequencies
+        let new_frequency_multiplier = current_frequency_multiplier * frequency_multiplier;
+
+        // Get back the new ppm value by subtracting the 1.0 base from it, changing the
+        // percentage to the ppm again and then negating it.
+        let new_ppm = -((new_frequency_multiplier - 1.0) * M);
+
+        Self::set_frequency_timex(new_ppm)
+    }
+
+    fn set_frequency_timex(ppm: f64) -> libc::timex {
+        // We do an offset with precision
+        let mut timex = EMPTY_TIMEX;
+
+        // set the frequency and the status (for STA_FREQHOLD)
+        timex.modes = libc::ADJ_FREQUENCY;
+
+        // NTP Kapi expects frequency adjustment in units of 2^-16 ppm
+        // but our input is in units of seconds drift per second, so convert.
+        let frequency = (ppm * 65536.0).round() as libc::c_long;
+
+        // Since Linux 2.6.26, the supplied value is clamped to the range (-32768000,
+        // +32768000). In older kernels, an EINVAL error occurs if the supplied value is
+        // out of range. (32768000 is 500 << 16)
+        timex.freq = frequency.clamp(-32_768_000 + 1, 32_768_000 - 1);
+
+        timex
+    }
+}
+
+impl std::os::fd::FromRawFd for UnixClock {
+    unsafe fn from_raw_fd(fd: std::os::fd::RawFd) -> Self {
+        Self::safe_from_raw_fd(fd)
     }
 }
 
@@ -291,15 +344,7 @@ impl Clock for UnixClock {
     }
 
     fn set_frequency(&self, frequency: f64) -> Result<Timestamp, Self::Error> {
-        let mut timex = EMPTY_TIMEX;
-
-        // set the frequency
-        timex.modes = libc::MOD_FREQUENCY;
-
-        // NTP Kapi expects frequency adjustment in units of 2^-16 ppm
-        // but our input is in units of seconds drift per second, so convert.
-        timex.freq = (frequency * 65536e6) as libc::c_long;
-
+        let mut timex = Self::set_frequency_timex(frequency);
         self.adjtime(&mut timex)?;
         self.extract_current_time(&timex)
     }
@@ -325,8 +370,11 @@ impl Clock for UnixClock {
     ) -> Result<(), Self::Error> {
         let mut timex = EMPTY_TIMEX;
         timex.modes = libc::MOD_ESTERROR | libc::MOD_MAXERROR;
+
+        // these fields are always in microseconds
         timex.esterror = est_error.as_nanos() as libc::c_long / 1000;
         timex.maxerror = max_error.as_nanos() as libc::c_long / 1000;
+
         Error::ignore_not_supported(self.adjtime(&mut timex))
     }
 }
@@ -337,6 +385,9 @@ pub enum Error {
     /// Insufficient permissions to interact with the clock.
     #[error("Insufficient permissions to interact with the clock.")]
     NoPermission,
+    /// No access to the clock.
+    #[error("No access to the clock.")]
+    NoAccess,
     /// Invalid operation requested
     #[error("Invalid operation requested")]
     Invalid,
@@ -346,9 +397,6 @@ pub enum Error {
     /// Clock operation requested is not supported by operating system.
     #[error("Clock operation requested is not supported by operating system.")]
     NotSupported,
-    /// Invalid clock path
-    #[error("Invalid clock path")]
-    InvalidClockPath,
 }
 
 impl Error {
@@ -360,6 +408,23 @@ impl Error {
             Err(Error::NotSupported) => Ok(()),
             other => other,
         }
+    }
+
+    // TODO: use https://doc.rust-lang.org/std/io/type.RawOsError.html when stable
+    fn into_raw_os_error(self) -> i32 {
+        match self {
+            Self::NoPermission => libc::EPERM,
+            Self::NoAccess => libc::EACCES,
+            Self::Invalid => libc::EINVAL,
+            Self::NoDevice => libc::ENODEV,
+            Self::NotSupported => libc::EOPNOTSUPP,
+        }
+    }
+}
+
+impl From<Error> for std::io::Error {
+    fn from(value: Error) -> Self {
+        std::io::Error::from_raw_os_error(value.into_raw_os_error())
     }
 }
 
@@ -383,11 +448,11 @@ fn convert_errno() -> Error {
     match error_number() {
         libc::EINVAL => Error::Invalid,
         // The documentation is a bit unclear if this can happen with
-        // non-dynamic clocks like the ntp kapi clock, however lets
-        // deal with it just in case.
+        // non-dynamic clocks like the ntp kapi clock, however deal with it just in case.
         libc::ENODEV => Error::NoDevice,
         libc::EOPNOTSUPP => Error::NotSupported,
-        libc::EPERM | libc::EACCES => Error::NoPermission,
+        libc::EPERM => Error::NoPermission,
+        libc::EACCES => Error::NoAccess,
         libc::EFAULT => unreachable!("we always pass in valid (accessible) buffers"),
         // No other errors should occur
         other => {
@@ -422,7 +487,7 @@ fn current_time_timespec(timespec: libc::timespec, precision: Precision) -> Time
             .unwrap_or_default(),
     };
 
-    // on macOS (at least) we've observed higher nanosecond counts that appear valid
+    // on macOS (at least) we've observed higher nanosecond counts than appear valid
     while nanos > 1_000_000_000 {
         seconds = seconds.wrapping_add(1);
         nanos -= 1_000_000_000;
@@ -596,5 +661,47 @@ mod tests {
         UnixClock::CLOCK_REALTIME
             .step_clock(Duration::new(0, 0))
             .unwrap();
+    }
+
+    #[test]
+    fn test_adjust_frequency_timex_identity() {
+        let frequency = 1;
+        let frequency_multiplier = 1.0;
+
+        let timex = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier);
+
+        assert_eq!(timex.freq, frequency);
+
+        assert_eq!(timex.modes, libc::ADJ_FREQUENCY);
+    }
+
+    #[test]
+    fn test_adjust_frequency_timex_one_percent() {
+        let frequency = 20 << 16;
+        let frequency_multiplier = 1.0 + 5e-6;
+
+        let new_frequency = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier).freq;
+
+        assert_eq!(new_frequency, 983047);
+    }
+
+    #[test]
+    fn test_adjust_frequency_timex_clamp_low() {
+        let frequency = 20 << 16;
+        let frequency_multiplier = 0.5;
+
+        let new_frequency = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier).freq;
+
+        assert_eq!(new_frequency, (500 << 16) - 1);
+    }
+
+    #[test]
+    fn test_adjust_frequency_timex_clamp_high() {
+        let frequency = 20 << 16;
+        let frequency_multiplier = 1.5;
+
+        let new_frequency = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier).freq;
+
+        assert_eq!(new_frequency, -((500 << 16) - 1));
     }
 }
