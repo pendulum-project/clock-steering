@@ -190,7 +190,7 @@ impl UnixClock {
         }
     }
 
-    #[cfg_attr(not(target_os = "linux"), allow(unused))]
+    #[cfg(target_os = "linux")]
     fn step_clock_timex(offset: Duration) -> libc::timex {
         // we provide the offset in nanoseconds
         let modes = libc::ADJ_SETOFFSET | libc::ADJ_NANO;
@@ -330,8 +330,8 @@ impl UnixClock {
         // We do an offset with precision
         let mut timex = EMPTY_TIMEX;
 
-        // set the frequency and the status (for STA_FREQHOLD)
-        timex.modes = libc::ADJ_FREQUENCY;
+        // set the frequency (MOD_FREQUENCY is an alias for ADJ_FREQUENCY on linux)
+        timex.modes = libc::MOD_FREQUENCY;
 
         // NTP Kapi expects frequency adjustment in units of 2^-16 ppm
         // but our input is in units of seconds drift per second, so convert.
@@ -384,7 +384,7 @@ impl Clock for UnixClock {
 
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     fn step_clock(&self, offset: Duration) -> Result<Timestamp, Self::Error> {
-        self.step_clock_timespec(offset)
+        self.step_clock_by_timespec(offset)
     }
 
     fn set_leap_seconds(&self, leap_status: LeapIndicator) -> Result<(), Self::Error> {
@@ -707,7 +707,7 @@ mod tests {
 
         assert_eq!(timex.freq, frequency);
 
-        assert_eq!(timex.modes, libc::ADJ_FREQUENCY);
+        assert_eq!(timex.modes, libc::MOD_FREQUENCY);
     }
 
     #[test]
@@ -740,6 +740,7 @@ mod tests {
         assert_eq!(new_frequency, -((500 << 16) - 1));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn test_step_clock() {
         let offset = Duration::from_secs_f64(1.2);
