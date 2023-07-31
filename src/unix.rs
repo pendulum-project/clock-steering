@@ -1,5 +1,9 @@
 use crate::{Clock, LeapIndicator, Timestamp};
-use std::{os::fd::AsRawFd, path::Path, time::Duration};
+use std::{
+    os::unix::prelude::{AsRawFd, FromRawFd, RawFd},
+    path::Path,
+    time::Duration,
+};
 
 /// A Unix OS clock
 #[derive(Debug, Clone, Copy)]
@@ -45,7 +49,7 @@ impl UnixClock {
         Ok(Self::safe_from_raw_fd(file.as_raw_fd()))
     }
 
-    fn safe_from_raw_fd(fd: std::os::fd::RawFd) -> Self {
+    fn safe_from_raw_fd(fd: RawFd) -> Self {
         let clock = ((!(fd as libc::clockid_t)) << 3) | 3;
 
         Self { clock }
@@ -342,8 +346,8 @@ impl UnixClock {
     }
 }
 
-impl std::os::fd::FromRawFd for UnixClock {
-    unsafe fn from_raw_fd(fd: std::os::fd::RawFd) -> Self {
+impl FromRawFd for UnixClock {
+    unsafe fn from_raw_fd(fd: RawFd) -> Self {
         Self::safe_from_raw_fd(fd)
     }
 }
@@ -398,24 +402,37 @@ impl Clock for UnixClock {
 }
 
 /// Errors that can be thrown by modifying a unix clock
-#[derive(Debug, Copy, Clone, thiserror::Error, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Error {
     /// Insufficient permissions to interact with the clock.
-    #[error("Insufficient permissions to interact with the clock.")]
     NoPermission,
     /// No access to the clock.
-    #[error("No access to the clock.")]
     NoAccess,
     /// Invalid operation requested
-    #[error("Invalid operation requested")]
     Invalid,
     /// Clock device has gone away
-    #[error("Clock device has gone away")]
     NoDevice,
     /// Clock operation requested is not supported by operating system.
-    #[error("Clock operation requested is not supported by operating system.")]
     NotSupported,
 }
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use Error::*;
+
+        let msg = match self {
+            NoPermission => "Insufficient permissions to interact with the clock.",
+            NoAccess => "No access to the clock.",
+            Invalid => "Invalid operation requested",
+            NoDevice => "Clock device has gone away",
+            NotSupported => "Clock operation requested is not supported by operating system.",
+        };
+
+        f.write_str(msg)
+    }
+}
+
+impl std::error::Error for Error {}
 
 impl Error {
     /// Turn the `Error::NotSupported` error variant into `Ok(())`, to silently
@@ -498,11 +515,11 @@ pub(crate) enum Precision {
 fn current_time_timespec(timespec: libc::timespec, precision: Precision) -> Timestamp {
     let mut seconds = timespec.tv_sec;
 
+    let nanos: i32 = timespec.tv_nsec as _;
+
     let mut nanos = match precision {
-        Precision::Nano => timespec.tv_nsec as i32,
-        Precision::Micro => (timespec.tv_nsec as i32)
-            .checked_mul(1000)
-            .unwrap_or_default(),
+        Precision::Nano => nanos,
+        Precision::Micro => nanos.checked_mul(1000).unwrap_or_default(),
     };
 
     // on macOS (at least) we've observed higher nanosecond counts than appear valid

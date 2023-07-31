@@ -1,7 +1,7 @@
 //! Logic for steering OS clocks, aimed at NTP and PTP.
 //!
 //! This code is used in our implementations of NTP [ntpd-rs](https://github.com/pendulum-project/ntpd-rs) and PTP [statime](https://github.com/pendulum-project/statime).
-use std::time::Duration;
+use core::time::Duration;
 
 #[cfg(unix)]
 pub mod unix;
@@ -33,7 +33,11 @@ pub enum LeapIndicator {
 
 /// Trait for reading information from and modifying an OS clock
 pub trait Clock {
+    #[cfg(feature = "std")]
     type Error: std::error::Error;
+
+    // feature(error_in_core) https://github.com/rust-lang/rust/issues/103765
+    // type Error: core::error::Error;
 
     /// Get the current time.
     fn now(&self) -> Result<Timestamp, Self::Error>;
