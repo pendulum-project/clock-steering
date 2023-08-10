@@ -1,4 +1,4 @@
-use crate::{Clock, LeapIndicator, Timestamp};
+use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
 use std::{
     os::unix::prelude::{AsRawFd, FromRawFd, RawFd},
     path::Path,
@@ -157,17 +157,14 @@ impl UnixClock {
     }
 
     #[cfg_attr(target_os = "linux", allow(unused))]
-    fn step_clock_by_timespec(&self, offset: Duration) -> Result<Timestamp, Error> {
-        let offset_secs = offset.as_secs();
-        let offset_nanos = offset.subsec_nanos();
-
+    fn step_clock_by_timespec(&self, offset: TimeOffset) -> Result<Timestamp, Error> {
         let mut timespec = self.clock_gettime()?;
 
         // see https://github.com/rust-lang/libc/issues/1848
         #[cfg_attr(target_env = "musl", allow(deprecated))]
         {
-            timespec.tv_sec += offset_secs as libc::time_t;
-            timespec.tv_nsec += offset_nanos as libc::c_long;
+            timespec.tv_sec += offset.seconds as libc::time_t;
+            timespec.tv_nsec += offset.nanos as libc::c_long;
         }
 
         self.clock_settime(timespec)?;
@@ -191,13 +188,13 @@ impl UnixClock {
     }
 
     #[cfg(target_os = "linux")]
-    fn step_clock_timex(offset: Duration) -> libc::timex {
+    fn step_clock_timex(offset: TimeOffset) -> libc::timex {
         // we provide the offset in nanoseconds
         let modes = libc::ADJ_SETOFFSET | libc::ADJ_NANO;
 
         let time = libc::timeval {
-            tv_sec: offset.as_secs() as _,
-            tv_usec: offset.subsec_nanos() as libc::suseconds_t,
+            tv_sec: offset.seconds,
+            tv_usec: offset.nanos as libc::suseconds_t,
         };
 
         libc::timex {
@@ -208,7 +205,7 @@ impl UnixClock {
     }
 
     #[cfg(target_os = "linux")]
-    fn step_clock_by_timex(&self, offset: Duration) -> Result<Timestamp, Error> {
+    fn step_clock_by_timex(&self, offset: TimeOffset) -> Result<Timestamp, Error> {
         let mut timex = Self::step_clock_timex(offset);
         self.adjtime(&mut timex)?;
         self.extract_current_time(&timex)
@@ -378,12 +375,12 @@ impl Clock for UnixClock {
     }
 
     #[cfg(target_os = "linux")]
-    fn step_clock(&self, offset: Duration) -> Result<Timestamp, Self::Error> {
+    fn step_clock(&self, offset: TimeOffset) -> Result<Timestamp, Self::Error> {
         self.step_clock_by_timex(offset)
     }
 
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    fn step_clock(&self, offset: Duration) -> Result<Timestamp, Self::Error> {
+    fn step_clock(&self, offset: TimeOffset) -> Result<Timestamp, Self::Error> {
         self.step_clock_by_timespec(offset)
     }
 
@@ -537,7 +534,6 @@ fn current_time_timespec(timespec: libc::timespec, precision: Precision) -> Time
     Timestamp {
         seconds,
         nanos: nanos as u32,
-        subnanos: 0,
     }
 }
 
@@ -551,11 +547,7 @@ fn current_time_timeval(timespec: libc::timeval, precision: Precision) -> Timest
             .unwrap_or_default(),
     };
 
-    Timestamp {
-        seconds,
-        nanos,
-        subnanos: 0,
-    }
+    Timestamp { seconds, nanos }
 }
 
 const EMPTY_TIMESPEC: libc::timespec = libc::timespec {
@@ -694,7 +686,10 @@ mod tests {
     #[ignore = "requires permissions, useful for testing permissions"]
     fn step_clock() {
         UnixClock::CLOCK_REALTIME
-            .step_clock(Duration::new(0, 0))
+            .step_clock(TimeOffset {
+                seconds: 0,
+                nanos: 0,
+            })
             .unwrap();
     }
 
@@ -743,7 +738,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_step_clock() {
-        let offset = Duration::from_secs_f64(1.2);
+        let offset = TimeOffset {
+            seconds: 1,
+            nanos: 200000000,
+        };
         let timex = UnixClock::step_clock_timex(offset);
 
         assert_eq!(timex.modes, libc::ADJ_SETOFFSET | libc::ADJ_NANO);

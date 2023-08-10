@@ -13,8 +13,15 @@ pub mod unix;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Timestamp {
     pub seconds: libc::time_t,
+    /// Nanos must be between 0 and 999999999 inclusive
     pub nanos: u32,
-    pub subnanos: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct TimeOffset {
+    pub seconds: libc::time_t,
+    /// Nanos must be between 0 and 999999999 inclusive
+    pub nanos: u32,
 }
 
 /// Indicate whether a leap second must be applied
@@ -56,7 +63,7 @@ pub trait Clock {
 
     /// Change the current time of the clock by an offset.
     /// Returns the time at which the change was applied.
-    fn step_clock(&self, offset: Duration) -> Result<Timestamp, Self::Error>;
+    fn step_clock(&self, offset: TimeOffset) -> Result<Timestamp, Self::Error>;
 
     /// Change the indicators for upcoming leap seconds.
     fn set_leap_seconds(&self, leap_status: LeapIndicator) -> Result<(), Self::Error>;
