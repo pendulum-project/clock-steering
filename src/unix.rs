@@ -55,6 +55,24 @@ impl UnixClock {
         Self { clock }
     }
 
+    fn into_raw_fd(self) -> Option<RawFd> {
+        // logic: on linux, the maximum number of file descriptors is isize::maximum
+        //
+        // > cat /proc/sys/fs/file-max
+        // 9223372036854775807
+        //
+        // the maximum per-process is usually much lower, but can be increased
+        //
+        // So, a file descriptor's highest bit is always zero, and because the raw file
+        // descriptor has been bitwise negated, it must start with a 1, i.e. there are no leading
+        // zeros
+        //
+        match self.clock.leading_zeros() {
+            0 => Some((!self.clock) >> 3),
+            _ => None,
+        }
+    }
+
     fn clock_adjtime(&self, timex: &mut libc::timex) -> Result<(), Error> {
         // We don't care about the time status, so the non-error
         // information in the return value of clock_adjtime can be ignored.
@@ -346,6 +364,18 @@ impl UnixClock {
 impl FromRawFd for UnixClock {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
         Self::safe_from_raw_fd(fd)
+    }
+}
+
+impl Drop for UnixClock {
+    fn drop(&mut self) {
+        if self.clock.leading_zeros() == 0 {
+            let fd = (!self.clock) >> 3;
+
+            let file = unsafe { std::fs::File::from_raw_fd(fd) };
+
+            drop(file)
+        }
     }
 }
 
@@ -775,5 +805,31 @@ mod tests {
         let resolution = UnixClock::CLOCK_REALTIME.resolution().unwrap();
 
         assert_ne!(resolution, Timestamp::default());
+    }
+
+    #[test]
+    fn defined_clocks_are_not_raw_fds() {
+        let f = |clock| UnixClock { clock }.into_raw_fd();
+
+        assert!(f(libc::CLOCK_REALTIME).is_none());
+        assert!(f(libc::CLOCK_MONOTONIC).is_none());
+        assert!(f(libc::CLOCK_PROCESS_CPUTIME_ID).is_none());
+        assert!(f(libc::CLOCK_THREAD_CPUTIME_ID).is_none());
+        assert!(f(libc::CLOCK_MONOTONIC_RAW).is_none());
+        assert!(f(libc::CLOCK_REALTIME_COARSE).is_none());
+        assert!(f(libc::CLOCK_MONOTONIC_COARSE).is_none());
+        assert!(f(libc::CLOCK_BOOTTIME).is_none());
+        assert!(f(libc::CLOCK_REALTIME_ALARM).is_none());
+        assert!(f(libc::CLOCK_BOOTTIME_ALARM).is_none());
+        assert!(f(libc::CLOCK_TAI).is_none());
+    }
+
+    #[test]
+    fn other_clocks_are_raw_fds() {
+        let f = |clock| UnixClock { clock }.into_raw_fd();
+
+        assert!(f(libc::CLOCK_TAI + 1).is_some());
+        assert!(f(256).is_some());
+        assert!(f(isize::MAX - 1).is_some());
     }
 }
