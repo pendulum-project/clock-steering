@@ -1,7 +1,6 @@
 use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
 use std::{
-    os::unix::io::IntoRawFd,
-    os::unix::prelude::{FromRawFd, RawFd},
+    os::unix::io::{FromRawFd, IntoRawFd, RawFd},
     path::Path,
     time::Duration,
 };
@@ -47,12 +46,11 @@ impl UnixClock {
     /// ```
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let file = std::fs::File::open(path)?;
-
         // we need an owned fd. the file will be closed when the process exits.
         Ok(Self::safe_from_raw_fd(file.into_raw_fd()))
     }
 
-    // Consume the fd and produce a clock id. Clock id is only valid
+    // Consume an fd and produce a clock id. Clock id is only valid
     // so long as the fd is open, so the RawFd here should
     // not be borrowed.
     fn safe_from_raw_fd(fd: RawFd) -> Self {
