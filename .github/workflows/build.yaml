@@ -40,7 +40,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         rust:
-          - 1.65.0
+          - 1.66.0
         target:
           - ""
         features:
