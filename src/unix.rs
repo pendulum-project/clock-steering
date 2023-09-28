@@ -47,7 +47,11 @@ impl UnixClock {
     /// }
     /// ```
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let file = std::fs::File::open(path)?;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .open(path)?;
+
         // we need an owned fd. the file will be closed when the process exits.
         Ok(Self::safe_from_raw_fd(file.into_raw_fd()))
     }
