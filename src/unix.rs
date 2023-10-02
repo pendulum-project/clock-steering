@@ -7,7 +7,7 @@ use std::{
 };
 
 /// A Unix OS clock
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct UnixClock {
     clock: libc::clockid_t,
     #[cfg(target_os = "linux")]
@@ -122,8 +122,7 @@ impl UnixClock {
         // # Safety
         // Safe since PTP_SYS_OFFSET expects as argument a mutable pointer to
         // ptp_sys_offset and offset is valid during the call
-        if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset as *mut ptp_sys_offset) } != 0
-        {
+        if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset) } != 0 {
             let t1 = Self::CLOCK_REALTIME.now();
             let tp = self.now();
             let t2 = Self::CLOCK_REALTIME.now();
@@ -432,6 +431,16 @@ impl UnixClock {
         timex.freq = frequency.clamp(-32_768_000 + 1, 32_768_000 - 1);
 
         timex
+    }
+}
+
+impl Drop for UnixClock {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(fd) = self.fd {
+            use std::os::unix::io::FromRawFd;
+            let _ = unsafe { std::fs::File::from_raw_fd(fd) };
+        }
     }
 }
 
