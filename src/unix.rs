@@ -444,6 +444,35 @@ impl Drop for UnixClock {
     }
 }
 
+impl Clone for UnixClock {
+    #[cfg(target_os = "linux")]
+    fn clone(&self) -> Self {
+        match self.fd {
+            Some(fd) => {
+                // an error is unlikely (source: https://linux.die.net/man/2/dup2)
+                //
+                // - EBADF cannot happen, the fd we provide is valid
+                // - EMFILE it is unlikely that the process runs out of file descriptors
+                //
+                // The other errors are only returned by dup2 and dup3
+                match unsafe { libc::dup(fd) } {
+                    -1 => panic!("{:?}", convert_errno()),
+                    new_fd => Self::safe_from_raw_fd(new_fd),
+                }
+            }
+            None => Self {
+                clock: self.clock,
+                fd: None,
+            },
+        }
+    }
+
+    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
+    fn clone(&self) -> Self {
+        Self { clock: self.clock }
+    }
+}
+
 impl Clock for UnixClock {
     type Error = Error;
 
@@ -870,5 +899,39 @@ mod tests {
         let resolution = UnixClock::CLOCK_REALTIME.resolution().unwrap();
 
         assert_ne!(resolution, Timestamp::default());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_valid_fd(fd: RawFd) -> bool {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+
+        // fd is valid if its flags are not -1
+        flags != -1
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_clone_and_drop() {
+        use std::fs::File;
+
+        // make some fd that we can open
+        let path = std::env::temp_dir().join("clock-steering-test-clock");
+        File::create(&path).unwrap();
+
+        let clock = UnixClock::open(&path).unwrap();
+        let original_fd = clock.fd.unwrap();
+
+        let new_clock = clock.clone();
+        let new_fd = new_clock.fd.unwrap();
+
+        assert_ne!(original_fd, new_fd);
+
+        assert!(is_valid_fd(original_fd));
+        drop(clock);
+        assert!(!is_valid_fd(original_fd));
+
+        assert!(is_valid_fd(new_fd));
+        drop(new_clock);
+        assert!(!is_valid_fd(new_fd));
     }
 }
