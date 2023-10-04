@@ -1,14 +1,16 @@
 use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
+use std::time::Duration;
+#[cfg(target_os = "linux")]
 use std::{
-    os::unix::io::{FromRawFd, IntoRawFd, RawFd},
+    os::unix::io::{IntoRawFd, RawFd},
     path::Path,
-    time::Duration,
 };
 
 /// A Unix OS clock
 #[derive(Debug, Clone, Copy)]
 pub struct UnixClock {
     clock: libc::clockid_t,
+    #[cfg(target_os = "linux")]
     fd: Option<RawFd>,
 }
 
@@ -29,6 +31,7 @@ impl UnixClock {
     /// ```
     pub const CLOCK_REALTIME: Self = UnixClock {
         clock: libc::CLOCK_REALTIME,
+        #[cfg(target_os = "linux")]
         fd: None,
     };
 
@@ -46,6 +49,7 @@ impl UnixClock {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(target_os = "linux")]
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let file = std::fs::OpenOptions::new()
             .write(true)
@@ -59,6 +63,7 @@ impl UnixClock {
     // Consume an fd and produce a clock id. Clock id is only valid
     // so long as the fd is open, so the RawFd here should
     // not be borrowed.
+    #[cfg(target_os = "linux")]
     fn safe_from_raw_fd(fd: RawFd) -> Self {
         let clock = ((!(fd as libc::clockid_t)) << 3) | 3;
 
@@ -427,12 +432,6 @@ impl UnixClock {
         timex.freq = frequency.clamp(-32_768_000 + 1, 32_768_000 - 1);
 
         timex
-    }
-}
-
-impl FromRawFd for UnixClock {
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        Self::safe_from_raw_fd(fd)
     }
 }
 
