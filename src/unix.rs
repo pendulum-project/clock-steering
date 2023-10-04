@@ -1,15 +1,17 @@
 use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
+use std::time::Duration;
+#[cfg(target_os = "linux")]
 use std::{
-    os::unix::io::IntoRawFd,
-    os::unix::prelude::{FromRawFd, RawFd},
+    os::unix::io::{IntoRawFd, RawFd},
     path::Path,
-    time::Duration,
 };
 
 /// A Unix OS clock
 #[derive(Debug, Clone, Copy)]
 pub struct UnixClock {
     clock: libc::clockid_t,
+    #[cfg(target_os = "linux")]
+    fd: Option<RawFd>,
 }
 
 impl UnixClock {
@@ -29,6 +31,8 @@ impl UnixClock {
     /// ```
     pub const CLOCK_REALTIME: Self = UnixClock {
         clock: libc::CLOCK_REALTIME,
+        #[cfg(target_os = "linux")]
+        fd: None,
     };
 
     /// Open a clock device.
@@ -45,20 +49,102 @@ impl UnixClock {
     ///     Ok(())
     /// }
     /// ```
+    #[cfg(target_os = "linux")]
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let file = std::fs::File::open(path)?;
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .open(path)?;
 
         // we need an owned fd. the file will be closed when the process exits.
         Ok(Self::safe_from_raw_fd(file.into_raw_fd()))
     }
 
-    // Consume the fd and produce a clock id. Clock id is only valid
+    // Consume an fd and produce a clock id. Clock id is only valid
     // so long as the fd is open, so the RawFd here should
     // not be borrowed.
+    #[cfg(target_os = "linux")]
     fn safe_from_raw_fd(fd: RawFd) -> Self {
         let clock = ((!(fd as libc::clockid_t)) << 3) | 3;
 
-        Self { clock }
+        Self {
+            clock,
+            fd: Some(fd),
+        }
+    }
+
+    /// Determine offset between file clock and system clock (if any)
+    /// Returns two system timestamps sandwhiching a timestamp from the
+    /// hardware clock.
+    #[cfg(target_os = "linux")]
+    pub fn system_offset(&self) -> Result<(Timestamp, Timestamp, Timestamp), Error> {
+        let Some(fd) = self.fd else {
+            return Err(Error::Invalid);
+        };
+
+        // TODO: remove type and constant definitions once libc updates
+        #[repr(C)]
+        #[derive(Default, Clone, Copy, PartialEq, Eq)]
+        #[allow(non_camel_case_types)]
+        struct ptp_clock_time {
+            sec: libc::__s64,
+            nsec: libc::__u32,
+            reserved: libc::__u32,
+        }
+
+        #[repr(C)]
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        #[allow(non_camel_case_types)]
+        struct ptp_sys_offset {
+            n_samples: libc::c_uint,
+            rsv: [libc::c_uint; 3],
+            ts: [ptp_clock_time; 51],
+        }
+
+        // Needed as arrays larger than 32 elements don't implement default.
+        impl Default for ptp_sys_offset {
+            fn default() -> Self {
+                Self {
+                    n_samples: Default::default(),
+                    rsv: Default::default(),
+                    ts: [Default::default(); 51],
+                }
+            }
+        }
+
+        const PTP_SYS_OFFSET: libc::c_uint = 0x43403d05;
+
+        let mut offset = ptp_sys_offset {
+            n_samples: 1,
+            ..Default::default()
+        };
+
+        // # Safety
+        // Safe since PTP_SYS_OFFSET expects as argument a mutable pointer to
+        // ptp_sys_offset and offset is valid during the call
+        if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset as *mut ptp_sys_offset) } != 0
+        {
+            let t1 = Self::CLOCK_REALTIME.now();
+            let tp = self.now();
+            let t2 = Self::CLOCK_REALTIME.now();
+
+            Ok((t1?, tp?, t2?))
+        } else {
+            Ok((
+                Timestamp {
+                    seconds: offset.ts[0].sec as _,
+                    nanos: offset.ts[0].nsec as _,
+                },
+                Timestamp {
+                    seconds: offset.ts[1].sec as _,
+                    nanos: offset.ts[1].nsec as _,
+                },
+                Timestamp {
+                    seconds: offset.ts[2].sec as _,
+                    nanos: offset.ts[2].nsec as _,
+                },
+            ))
+        }
     }
 
     fn clock_adjtime(&self, timex: &mut libc::timex) -> Result<(), Error> {
@@ -346,12 +432,6 @@ impl UnixClock {
         timex.freq = frequency.clamp(-32_768_000 + 1, 32_768_000 - 1);
 
         timex
-    }
-}
-
-impl FromRawFd for UnixClock {
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        Self::safe_from_raw_fd(fd)
     }
 }
 
