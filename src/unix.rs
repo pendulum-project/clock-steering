@@ -35,6 +35,26 @@ impl UnixClock {
         fd: None,
     };
 
+    /// TAI time on linux systems.
+    ///
+    /// ```no_run
+    /// use clock_steering::{Clock, unix::UnixClock};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let clock = UnixClock::CLOCK_TAI;
+    ///     let now = clock.now()?;
+    ///
+    ///     println!("{now:?}");
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    #[cfg(target_os = "linux")]
+    pub const CLOCK_TAI: Self = UnixClock {
+        clock: libc::CLOCK_TAI,
+        fd: None,
+    };
+
     /// Open a clock device.
     ///
     /// ```no_run
@@ -60,6 +80,30 @@ impl UnixClock {
         Ok(Self::safe_from_raw_fd(file.into_raw_fd()))
     }
 
+    /// Set the offset between TAI and UTC.
+    #[cfg(target_os = "linux")]
+    pub fn set_tai(&self, tai_offset: i32) -> Result<(), Error> {
+        let mut timex = libc::timex {
+            modes: libc::ADJ_TAI,
+            constant: tai_offset as _,
+            ..EMPTY_TIMEX
+        };
+
+        self.clock_adjtime(&mut timex)
+    }
+
+    /// Get the offset between TAI and UTC currently configured.
+    #[cfg(target_os = "linux")]
+    pub fn get_tai(&self) -> Result<i32, Error> {
+        let mut timex = EMPTY_TIMEX;
+        if self.clock_adjtime(&mut timex).is_ok() {
+            Ok(timex.tai)
+        } else {
+            // hardware clock which doesn't have an offset anyway
+            Ok(0)
+        }
+    }
+
     // Consume an fd and produce a clock id. Clock id is only valid
     // so long as the fd is open, so the RawFd here should
     // not be borrowed.
@@ -73,7 +117,7 @@ impl UnixClock {
         }
     }
 
-    /// Determine offset between file clock and system clock (if any)
+    /// Determine offset between file clock and TAI clock (if any)
     /// Returns two system timestamps sandwhiching a timestamp from the
     /// hardware clock.
     #[cfg(target_os = "linux")]
@@ -124,15 +168,17 @@ impl UnixClock {
         // ptp_sys_offset and offset is valid during the call
         if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset as *mut ptp_sys_offset) } != 0
         {
-            let t1 = Self::CLOCK_REALTIME.now();
+            let t1 = Self::CLOCK_TAI.now();
             let tp = self.now();
-            let t2 = Self::CLOCK_REALTIME.now();
+            let t2 = Self::CLOCK_TAI.now();
 
             Ok((t1?, tp?, t2?))
         } else {
+            let tai_offset = Self::CLOCK_TAI.get_tai()?;
+
             Ok((
                 Timestamp {
-                    seconds: offset.ts[0].sec as _,
+                    seconds: (offset.ts[0].sec + tai_offset as i64) as _,
                     nanos: offset.ts[0].nsec as _,
                 },
                 Timestamp {
@@ -140,7 +186,7 @@ impl UnixClock {
                     nanos: offset.ts[1].nsec as _,
                 },
                 Timestamp {
-                    seconds: offset.ts[2].sec as _,
+                    seconds: (offset.ts[2].sec + tai_offset as i64) as _,
                     nanos: offset.ts[2].nsec as _,
                 },
             ))
@@ -441,9 +487,12 @@ impl Clock for UnixClock {
     fn now(&self) -> Result<Timestamp, Self::Error> {
         let mut ntp_kapi_timex = EMPTY_TIMEX;
 
-        self.adjtime(&mut ntp_kapi_timex)?;
-
-        self.extract_current_time(&ntp_kapi_timex)
+        if self.adjtime(&mut ntp_kapi_timex).is_ok() {
+            self.extract_current_time(&ntp_kapi_timex)
+        } else {
+            self.clock_gettime()
+                .map(|ts| current_time_timespec(ts, Precision::Nano))
+        }
     }
 
     fn resolution(&self) -> Result<Timestamp, Self::Error> {
