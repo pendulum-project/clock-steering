@@ -86,7 +86,7 @@ impl UnixClock {
         let mut timex = libc::timex {
             modes: libc::ADJ_TAI,
             constant: tai_offset as _,
-            ..EMPTY_TIMEX
+            ..ZEROED_TIMEX
         };
 
         self.clock_adjtime(&mut timex)
@@ -95,7 +95,7 @@ impl UnixClock {
     /// Get the offset between TAI and UTC currently configured.
     #[cfg(target_os = "linux")]
     pub fn get_tai(&self) -> Result<i32, Error> {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
         if self.clock_adjtime(&mut timex).is_ok() {
             Ok(timex.tai)
         } else {
@@ -321,7 +321,7 @@ impl UnixClock {
             modes,
             esterror,
             maxerror,
-            ..EMPTY_TIMEX
+            ..ZEROED_TIMEX
         }
     }
 
@@ -338,7 +338,7 @@ impl UnixClock {
         libc::timex {
             modes,
             time,
-            ..EMPTY_TIMEX
+            ..ZEROED_TIMEX
         }
     }
 
@@ -372,7 +372,7 @@ impl UnixClock {
     where
         F: FnOnce(libc::timex) -> libc::timex,
     {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
         self.adjtime(&mut timex)?;
 
         timex = f(timex);
@@ -405,7 +405,7 @@ impl UnixClock {
     ///
     /// Returns the time at which the change was applied.
     pub fn adjust_frequency(&mut self, frequency_multiplier: f64) -> Result<Timestamp, Error> {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
         self.adjtime(&mut timex)?;
 
         let mut timex = Self::adjust_frequency_timex(timex.freq, frequency_multiplier);
@@ -422,7 +422,7 @@ impl UnixClock {
     /// - [`libc::STA_PPSTIME`]: pulse-per-second time
     /// - [`libc::STA_PPSFREQ`]: pulse-per-second frequency discipline
     pub fn disable_kernel_ntp_algorithm(&self) -> Result<(), Error> {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
         self.adjtime(&mut timex)?;
 
         // We are setting the status bits
@@ -463,7 +463,7 @@ impl UnixClock {
 
     fn set_frequency_timex(ppm: f64) -> libc::timex {
         // We do an offset with precision
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
 
         // set the frequency (MOD_FREQUENCY is an alias for ADJ_FREQUENCY on linux)
         timex.modes = libc::MOD_FREQUENCY;
@@ -485,7 +485,7 @@ impl Clock for UnixClock {
     type Error = Error;
 
     fn now(&self) -> Result<Timestamp, Self::Error> {
-        let mut ntp_kapi_timex = EMPTY_TIMEX;
+        let mut ntp_kapi_timex = ZEROED_TIMEX;
 
         if self.adjtime(&mut ntp_kapi_timex).is_ok() {
             self.extract_current_time(&ntp_kapi_timex)
@@ -693,7 +693,7 @@ const EMPTY_TIMESPEC: libc::timespec = libc::timespec {
 // Libc has no good other way of obtaining this, so let's at least make our
 // functions more readable.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-pub const EMPTY_TIMEX: libc::timex = libc::timex {
+pub const ZEROED_TIMEX: libc::timex = libc::timex {
     modes: 0,
     offset: 0,
     freq: 0,
