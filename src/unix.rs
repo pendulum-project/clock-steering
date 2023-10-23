@@ -1,3 +1,7 @@
+//! APIs for steering the clock on unix systems.
+//!
+//! The public API is generic for all unix systems (e.g. linux, macos and freebsd),
+//! but internally uses updated (and more efficient) APIs when available for the target.
 use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
 use std::time::Duration;
 #[cfg(target_os = "linux")]
@@ -92,7 +96,7 @@ impl UnixClock {
         self.clock_adjtime(&mut timex)
     }
 
-    /// Get the offset between TAI and UTC currently configured.
+    /// Get the offset between TAI and UTC.
     #[cfg(target_os = "linux")]
     pub fn get_tai_offset(&self) -> Result<i32, Error> {
         // assume the offset is 0 when the operation is not supported. The operations are usually
@@ -119,8 +123,41 @@ impl UnixClock {
     }
 
     /// Determine offset between file clock and TAI clock (if any)
-    /// Returns two system timestamps sandwhiching a timestamp from the
+    /// Returns two system timestamps sandwiching a timestamp from the
     /// hardware clock.
+    ///
+    /// ```no_run
+    /// use clock_steering::{Clock, unix::UnixClock};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let ptp0 = UnixClock::open("/dev/ptp0")?;
+    ///     let (system0, hardware, system1) = ptp0.system_offset()?;
+    ///
+    ///     dbg!(system0, hardware, system1);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This will print data like this:
+    ///
+    /// ```plaintext
+    /// (
+    ///     Timestamp {
+    ///         seconds: 1698067038,
+    ///         nanos: 235309417,
+    ///     },
+    ///     Timestamp {
+    ///         seconds: 1698067036,
+    ///         nanos: 613797435,
+    ///     },
+    ///     Timestamp {
+    ///         seconds: 1698067038,
+    ///         nanos: 235313607,
+    ///     },
+    /// ),
+    /// ```
+
     #[cfg(target_os = "linux")]
     pub fn system_offset(&self) -> Result<(Timestamp, Timestamp, Timestamp), Error> {
         let Some(fd) = self.fd else {
@@ -696,8 +733,7 @@ const EMPTY_TIMESPEC: libc::timespec = libc::timespec {
     tv_nsec: 0,
 };
 
-// Libc has no good other way of obtaining this, so let's at least make our
-// functions more readable.
+/// A [`libc::timex`] with all fields initialized to zero.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub const ZEROED_TIMEX: libc::timex = libc::timex {
     modes: 0,
@@ -736,6 +772,7 @@ pub const ZEROED_TIMEX: libc::timex = libc::timex {
     __unused11: 0,
 };
 
+/// A [`libc::timex`] with all fields initialized to zero.
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 pub const EMPTY_TIMEX: libc::timex = libc::timex {
     modes: 0,
@@ -764,6 +801,7 @@ pub const EMPTY_TIMEX: libc::timex = libc::timex {
     __padding: [0; 11],
 };
 
+/// A [`libc::timex`] with all fields initialized to zero.
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 pub const EMPTY_TIMEX: libc::timex = libc::timex {
     modes: 0,

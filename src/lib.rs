@@ -1,6 +1,9 @@
 //! Logic for steering OS clocks, aimed at NTP and PTP.
 //!
-//! This code is used in our implementations of NTP [ntpd-rs](https://github.com/pendulum-project/ntpd-rs) and PTP [statime](https://github.com/pendulum-project/statime).
+//! This crate is designed for usage in:
+//!
+//! - [ntpd-rs](https://github.com/pendulum-project/ntpd-rs), a rust NTP implementation.
+//! - [statime](https://github.com/pendulum-project/statime), a rust PTP implementation.
 use core::time::Duration;
 
 #[cfg(unix)]
@@ -39,7 +42,7 @@ pub enum LeapIndicator {
     Unknown,
 }
 
-/// Trait for reading information from and modifying an OS clock
+/// Read from and modify an OS clock
 pub trait Clock {
     #[cfg(feature = "std")]
     type Error: std::error::Error;
