@@ -17,6 +17,7 @@ pub struct Timestamp {
     pub nanos: u32,
 }
 
+/// An offset to be applied by a clock step
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TimeOffset {
     pub seconds: libc::time_t,

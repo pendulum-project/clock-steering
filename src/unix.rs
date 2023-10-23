@@ -95,12 +95,13 @@ impl UnixClock {
     /// Get the offset between TAI and UTC currently configured.
     #[cfg(target_os = "linux")]
     pub fn get_tai_offset(&self) -> Result<i32, Error> {
+        // assume the offset is 0 when the operation is not supported. The operations are usually
+        // not supported on hardware clocks, but they have an offset of 0 anyway.
         let mut timex = ZEROED_TIMEX;
-        if self.clock_adjtime(&mut timex).is_ok() {
-            Ok(timex.tai)
-        } else {
-            // hardware clock which doesn't have an offset anyway
-            Ok(0)
+        match self.clock_adjtime(&mut timex) {
+            Ok(_) => Ok(timex.tai),
+            Err(Error::NotSupported) => Ok(0),
+            Err(other) => Err(other),
         }
     }
 
@@ -164,32 +165,37 @@ impl UnixClock {
         };
 
         // # Safety
-        // Safe since PTP_SYS_OFFSET expects as argument a mutable pointer to
-        // ptp_sys_offset and offset is valid during the call
-        if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset as *mut ptp_sys_offset) } != 0
-        {
-            let t1 = Self::CLOCK_TAI.now();
-            let tp = self.now();
-            let t2 = Self::CLOCK_TAI.now();
+        //
+        // - PTP_SYS_OFFSET expects as argument a mutable pointer to ptp_sys_offset
+        // - offset is valid during the call
+        match unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset) } {
+            0 => {
+                // usually zero because the timex api is not supported for CLOCK_TAI
+                let tai_offset = Self::CLOCK_TAI.get_tai_offset()?;
 
-            Ok((t1?, tp?, t2?))
-        } else {
-            let tai_offset = Self::CLOCK_TAI.get_tai_offset()?;
+                Ok((
+                    Timestamp {
+                        seconds: (offset.ts[0].sec + tai_offset as i64) as _,
+                        nanos: offset.ts[0].nsec as _,
+                    },
+                    Timestamp {
+                        seconds: offset.ts[1].sec as _,
+                        nanos: offset.ts[1].nsec as _,
+                    },
+                    Timestamp {
+                        seconds: (offset.ts[2].sec + tai_offset as i64) as _,
+                        nanos: offset.ts[2].nsec as _,
+                    },
+                ))
+            }
+            _ => {
+                // the ioctl did not work, try the more expensive backup option
+                let t1 = Self::CLOCK_TAI.now();
+                let tp = self.now();
+                let t2 = Self::CLOCK_TAI.now();
 
-            Ok((
-                Timestamp {
-                    seconds: (offset.ts[0].sec + tai_offset as i64) as _,
-                    nanos: offset.ts[0].nsec as _,
-                },
-                Timestamp {
-                    seconds: offset.ts[1].sec as _,
-                    nanos: offset.ts[1].nsec as _,
-                },
-                Timestamp {
-                    seconds: (offset.ts[2].sec + tai_offset as i64) as _,
-                    nanos: offset.ts[2].nsec as _,
-                },
-            ))
+                Ok((t1?, tp?, t2?))
+            }
         }
     }
 
