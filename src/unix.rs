@@ -82,7 +82,7 @@ impl UnixClock {
 
     /// Set the offset between TAI and UTC.
     #[cfg(target_os = "linux")]
-    pub fn set_tai(&self, tai_offset: i32) -> Result<(), Error> {
+    pub fn set_tai_offset(&self, tai_offset: i32) -> Result<(), Error> {
         let mut timex = libc::timex {
             modes: libc::ADJ_TAI,
             constant: tai_offset as _,
@@ -94,7 +94,7 @@ impl UnixClock {
 
     /// Get the offset between TAI and UTC currently configured.
     #[cfg(target_os = "linux")]
-    pub fn get_tai(&self) -> Result<i32, Error> {
+    pub fn get_tai_offset(&self) -> Result<i32, Error> {
         let mut timex = ZEROED_TIMEX;
         if self.clock_adjtime(&mut timex).is_ok() {
             Ok(timex.tai)
@@ -174,7 +174,7 @@ impl UnixClock {
 
             Ok((t1?, tp?, t2?))
         } else {
-            let tai_offset = Self::CLOCK_TAI.get_tai()?;
+            let tai_offset = Self::CLOCK_TAI.get_tai_offset()?;
 
             Ok((
                 Timestamp {
