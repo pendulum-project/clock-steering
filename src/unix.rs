@@ -1,3 +1,7 @@
+//! APIs for steering the clock on unix systems.
+//!
+//! The public API is generic for all unix systems (e.g. linux, macos and freebsd),
+//! but internally uses updated (and more efficient) APIs when available for the target.
 use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
 use std::time::Duration;
 #[cfg(target_os = "linux")]
@@ -82,25 +86,26 @@ impl UnixClock {
 
     /// Set the offset between TAI and UTC.
     #[cfg(target_os = "linux")]
-    pub fn set_tai(&self, tai_offset: i32) -> Result<(), Error> {
+    pub fn set_tai_offset(&self, tai_offset: i32) -> Result<(), Error> {
         let mut timex = libc::timex {
             modes: libc::ADJ_TAI,
             constant: tai_offset as _,
-            ..EMPTY_TIMEX
+            ..ZEROED_TIMEX
         };
 
         self.clock_adjtime(&mut timex)
     }
 
-    /// Get the offset between TAI and UTC currently configured.
+    /// Get the offset between TAI and UTC.
     #[cfg(target_os = "linux")]
-    pub fn get_tai(&self) -> Result<i32, Error> {
-        let mut timex = EMPTY_TIMEX;
-        if self.clock_adjtime(&mut timex).is_ok() {
-            Ok(timex.tai)
-        } else {
-            // hardware clock which doesn't have an offset anyway
-            Ok(0)
+    pub fn get_tai_offset(&self) -> Result<i32, Error> {
+        // assume the offset is 0 when the operation is not supported. The operations are usually
+        // not supported on hardware clocks, but they have an offset of 0 anyway.
+        let mut timex = ZEROED_TIMEX;
+        match self.clock_adjtime(&mut timex) {
+            Ok(_) => Ok(timex.tai),
+            Err(Error::NotSupported) => Ok(0),
+            Err(other) => Err(other),
         }
     }
 
@@ -118,8 +123,41 @@ impl UnixClock {
     }
 
     /// Determine offset between file clock and TAI clock (if any)
-    /// Returns two system timestamps sandwhiching a timestamp from the
+    /// Returns two system timestamps sandwiching a timestamp from the
     /// hardware clock.
+    ///
+    /// ```no_run
+    /// use clock_steering::{Clock, unix::UnixClock};
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let ptp0 = UnixClock::open("/dev/ptp0")?;
+    ///     let (system0, hardware, system1) = ptp0.system_offset()?;
+    ///
+    ///     dbg!(system0, hardware, system1);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This will print data like this:
+    ///
+    /// ```plaintext
+    /// (
+    ///     Timestamp {
+    ///         seconds: 1698067038,
+    ///         nanos: 235309417,
+    ///     },
+    ///     Timestamp {
+    ///         seconds: 1698067036,
+    ///         nanos: 613797435,
+    ///     },
+    ///     Timestamp {
+    ///         seconds: 1698067038,
+    ///         nanos: 235313607,
+    ///     },
+    /// ),
+    /// ```
+
     #[cfg(target_os = "linux")]
     pub fn system_offset(&self) -> Result<(Timestamp, Timestamp, Timestamp), Error> {
         let Some(fd) = self.fd else {
@@ -164,32 +202,37 @@ impl UnixClock {
         };
 
         // # Safety
-        // Safe since PTP_SYS_OFFSET expects as argument a mutable pointer to
-        // ptp_sys_offset and offset is valid during the call
-        if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset as *mut ptp_sys_offset) } != 0
-        {
-            let t1 = Self::CLOCK_TAI.now();
-            let tp = self.now();
-            let t2 = Self::CLOCK_TAI.now();
+        //
+        // - PTP_SYS_OFFSET expects as argument a mutable pointer to ptp_sys_offset
+        // - offset is valid during the call
+        match unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset) } {
+            0 => {
+                // usually zero because the timex api is not supported for CLOCK_TAI
+                let tai_offset = Self::CLOCK_TAI.get_tai_offset()?;
 
-            Ok((t1?, tp?, t2?))
-        } else {
-            let tai_offset = Self::CLOCK_TAI.get_tai()?;
+                Ok((
+                    Timestamp {
+                        seconds: (offset.ts[0].sec + tai_offset as i64) as _,
+                        nanos: offset.ts[0].nsec as _,
+                    },
+                    Timestamp {
+                        seconds: offset.ts[1].sec as _,
+                        nanos: offset.ts[1].nsec as _,
+                    },
+                    Timestamp {
+                        seconds: (offset.ts[2].sec + tai_offset as i64) as _,
+                        nanos: offset.ts[2].nsec as _,
+                    },
+                ))
+            }
+            _ => {
+                // the ioctl did not work, try the more expensive backup option
+                let t1 = Self::CLOCK_TAI.now();
+                let tp = self.now();
+                let t2 = Self::CLOCK_TAI.now();
 
-            Ok((
-                Timestamp {
-                    seconds: (offset.ts[0].sec + tai_offset as i64) as _,
-                    nanos: offset.ts[0].nsec as _,
-                },
-                Timestamp {
-                    seconds: offset.ts[1].sec as _,
-                    nanos: offset.ts[1].nsec as _,
-                },
-                Timestamp {
-                    seconds: (offset.ts[2].sec + tai_offset as i64) as _,
-                    nanos: offset.ts[2].nsec as _,
-                },
-            ))
+                Ok((t1?, tp?, t2?))
+            }
         }
     }
 
@@ -263,7 +306,7 @@ impl UnixClock {
 
     #[cfg_attr(target_os = "linux", allow(unused))]
     fn clock_gettime(&self) -> Result<libc::timespec, Error> {
-        let mut timespec = EMPTY_TIMESPEC;
+        let mut timespec = ZEROED_TIMESPEC;
 
         // # Safety
         //
@@ -321,7 +364,7 @@ impl UnixClock {
             modes,
             esterror,
             maxerror,
-            ..EMPTY_TIMEX
+            ..ZEROED_TIMEX
         }
     }
 
@@ -338,7 +381,7 @@ impl UnixClock {
         libc::timex {
             modes,
             time,
-            ..EMPTY_TIMEX
+            ..ZEROED_TIMEX
         }
     }
 
@@ -372,7 +415,7 @@ impl UnixClock {
     where
         F: FnOnce(libc::timex) -> libc::timex,
     {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
         self.adjtime(&mut timex)?;
 
         timex = f(timex);
@@ -405,7 +448,7 @@ impl UnixClock {
     ///
     /// Returns the time at which the change was applied.
     pub fn adjust_frequency(&mut self, frequency_multiplier: f64) -> Result<Timestamp, Error> {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
         self.adjtime(&mut timex)?;
 
         let mut timex = Self::adjust_frequency_timex(timex.freq, frequency_multiplier);
@@ -422,7 +465,7 @@ impl UnixClock {
     /// - [`libc::STA_PPSTIME`]: pulse-per-second time
     /// - [`libc::STA_PPSFREQ`]: pulse-per-second frequency discipline
     pub fn disable_kernel_ntp_algorithm(&self) -> Result<(), Error> {
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
         self.adjtime(&mut timex)?;
 
         // We are setting the status bits
@@ -463,7 +506,7 @@ impl UnixClock {
 
     fn set_frequency_timex(ppm: f64) -> libc::timex {
         // We do an offset with precision
-        let mut timex = EMPTY_TIMEX;
+        let mut timex = ZEROED_TIMEX;
 
         // set the frequency (MOD_FREQUENCY is an alias for ADJ_FREQUENCY on linux)
         timex.modes = libc::MOD_FREQUENCY;
@@ -485,7 +528,7 @@ impl Clock for UnixClock {
     type Error = Error;
 
     fn now(&self) -> Result<Timestamp, Self::Error> {
-        let mut ntp_kapi_timex = EMPTY_TIMEX;
+        let mut ntp_kapi_timex = ZEROED_TIMEX;
 
         if self.adjtime(&mut ntp_kapi_timex).is_ok() {
             self.extract_current_time(&ntp_kapi_timex)
@@ -496,7 +539,7 @@ impl Clock for UnixClock {
     }
 
     fn resolution(&self) -> Result<Timestamp, Self::Error> {
-        let mut timespec = EMPTY_TIMESPEC;
+        let mut timespec = ZEROED_TIMESPEC;
 
         cerr(unsafe { libc::clock_getres(self.clock, &mut timespec) })?;
 
@@ -685,15 +728,14 @@ fn current_time_timeval(timespec: libc::timeval, precision: Precision) -> Timest
     Timestamp { seconds, nanos }
 }
 
-const EMPTY_TIMESPEC: libc::timespec = libc::timespec {
+const ZEROED_TIMESPEC: libc::timespec = libc::timespec {
     tv_sec: 0,
     tv_nsec: 0,
 };
 
-// Libc has no good other way of obtaining this, so let's at least make our
-// functions more readable.
+/// A [`libc::timex`] with all fields initialized to zero.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-pub const EMPTY_TIMEX: libc::timex = libc::timex {
+pub const ZEROED_TIMEX: libc::timex = libc::timex {
     modes: 0,
     offset: 0,
     freq: 0,
@@ -730,6 +772,7 @@ pub const EMPTY_TIMEX: libc::timex = libc::timex {
     __unused11: 0,
 };
 
+/// A [`libc::timex`] with all fields initialized to zero.
 #[cfg(all(target_os = "linux", target_env = "musl"))]
 pub const EMPTY_TIMEX: libc::timex = libc::timex {
     modes: 0,
@@ -758,6 +801,7 @@ pub const EMPTY_TIMEX: libc::timex = libc::timex {
     __padding: [0; 11],
 };
 
+/// A [`libc::timex`] with all fields initialized to zero.
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 pub const EMPTY_TIMEX: libc::timex = libc::timex {
     modes: 0,
