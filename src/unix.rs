@@ -80,30 +80,6 @@ impl UnixClock {
         Ok(Self::safe_from_raw_fd(file.into_raw_fd()))
     }
 
-    /// Set the offset between TAI and UTC.
-    #[cfg(target_os = "linux")]
-    pub fn set_tai(&self, tai_offset: i32) -> Result<(), Error> {
-        let mut timex = libc::timex {
-            modes: libc::ADJ_TAI,
-            constant: tai_offset as _,
-            ..EMPTY_TIMEX
-        };
-
-        self.clock_adjtime(&mut timex)
-    }
-
-    /// Get the offset between TAI and UTC currently configured.
-    #[cfg(target_os = "linux")]
-    pub fn get_tai(&self) -> Result<i32, Error> {
-        let mut timex = EMPTY_TIMEX;
-        if self.clock_adjtime(&mut timex).is_ok() {
-            Ok(timex.tai)
-        } else {
-            // hardware clock which doesn't have an offset anyway
-            Ok(0)
-        }
-    }
-
     // Consume an fd and produce a clock id. Clock id is only valid
     // so long as the fd is open, so the RawFd here should
     // not be borrowed.
@@ -253,7 +229,7 @@ impl UnixClock {
     /// Note that [`libc::timex`] has a different layout between different operating systems, and
     /// not all fields are available on all operating systems. Keep this in mind when writing
     /// platform-independent code.
-    pub fn adjtime(&self, timex: &mut libc::timex) -> Result<(), Error> {
+    fn adjtime(&self, timex: &mut libc::timex) -> Result<(), Error> {
         if self.clock == libc::CLOCK_REALTIME {
             Self::ntp_adjtime(timex)
         } else {
@@ -396,71 +372,6 @@ impl UnixClock {
         })
     }
 
-    /// Modify the frequency by a multiplier. To change the frequency to a fixed value, use
-    /// [`UnixClock::set_frequency`].
-    ///
-    /// For example, if the clock is at 10.0 mhz, but should run at 10.1 mhz,
-    /// then the frequency_multiplier should be 1.01. In practice, the multiplier is usually much
-    /// smaller.
-    ///
-    /// Returns the time at which the change was applied.
-    pub fn adjust_frequency(&mut self, frequency_multiplier: f64) -> Result<Timestamp, Error> {
-        let mut timex = EMPTY_TIMEX;
-        self.adjtime(&mut timex)?;
-
-        let mut timex = Self::adjust_frequency_timex(timex.freq, frequency_multiplier);
-        self.adjtime(&mut timex)?;
-        self.extract_current_time(&timex)
-    }
-
-    /// Disable all standard NTP kernel clock discipline. It is all your responsibility now.
-    ///
-    /// The disabled settings are:
-    ///
-    /// - [`libc::STA_PLL`]: kernel phase-locked loop
-    /// - [`libc::STA_FLL`]: kernel frequency-locked loop
-    /// - [`libc::STA_PPSTIME`]: pulse-per-second time
-    /// - [`libc::STA_PPSFREQ`]: pulse-per-second frequency discipline
-    pub fn disable_kernel_ntp_algorithm(&self) -> Result<(), Error> {
-        let mut timex = EMPTY_TIMEX;
-        self.adjtime(&mut timex)?;
-
-        // We are setting the status bits
-        timex.modes = libc::MOD_STATUS;
-
-        // Disable all kernel time control loops (phase lock, frequency lock, pps time and pps frequency).
-        timex.status &= !(libc::STA_PLL | libc::STA_FLL | libc::STA_PPSTIME | libc::STA_PPSFREQ);
-
-        // ignore if we cannot disable the kernel time control loops (e.g. external clocks)
-        Error::ignore_not_supported(self.adjtime(&mut timex))
-    }
-
-    fn adjust_frequency_timex(frequency: libc::c_long, frequency_multiplier: f64) -> libc::timex {
-        const M: f64 = 1_000_000.0;
-
-        // In struct timex, freq, ppsfreq, and stabil are ppm (parts per million) with a
-        // 16-bit fractional part, which means that a value of 1 in one of those fields
-        // actually means 2^-16 ppm, and 2^16=65536 is 1 ppm.  This is the case for both
-        // input values (in the case of freq) and output values.
-        let current_ppm = frequency as f64 / 65536.0;
-
-        // we need to recover the current frequency multiplier from the PPM value.
-        // The ppm is an offset from the main frequency, so it's the base +- the ppm
-        // expressed as a percentage. PPM is in the opposite direction from the
-        // speed factor. A postive ppm means the clock is running slower, so we use its
-        // negative.
-        let current_frequency_multiplier = 1.0 + (-current_ppm / M);
-
-        // Now multiply the frequencies
-        let new_frequency_multiplier = current_frequency_multiplier * frequency_multiplier;
-
-        // Get back the new ppm value by subtracting the 1.0 base from it, changing the
-        // percentage to the ppm again and then negating it.
-        let new_ppm = -((new_frequency_multiplier - 1.0) * M);
-
-        Self::set_frequency_timex(new_ppm)
-    }
-
     fn set_frequency_timex(ppm: f64) -> libc::timex {
         // We do an offset with precision
         let mut timex = EMPTY_TIMEX;
@@ -503,6 +414,13 @@ impl Clock for UnixClock {
         Ok(current_time_timespec(timespec, Precision::Nano))
     }
 
+    fn get_frequency(&self) -> Result<f64, Self::Error> {
+        let mut timex = EMPTY_TIMEX;
+        self.adjtime(&mut timex)?;
+
+        Ok((timex.freq as f64) / 65536.0)
+    }
+
     fn set_frequency(&self, frequency: f64) -> Result<Timestamp, Self::Error> {
         let mut timex = Self::set_frequency_timex(frequency);
         self.adjtime(&mut timex)?;
@@ -530,6 +448,52 @@ impl Clock for UnixClock {
     ) -> Result<(), Self::Error> {
         let mut timex = Self::error_estimate_timex(est_error, max_error);
         Error::ignore_not_supported(self.adjtime(&mut timex))
+    }
+
+    fn disable_kernel_ntp_algorithm(&self) -> Result<(), Self::Error> {
+        let mut timex = EMPTY_TIMEX;
+        self.adjtime(&mut timex)?;
+
+        // We are setting the status bits
+        timex.modes = libc::MOD_STATUS;
+
+        // Disable all kernel time control loops (phase lock, frequency lock, pps time and pps frequency).
+        timex.status &= !(libc::STA_PLL | libc::STA_FLL | libc::STA_PPSTIME | libc::STA_PPSFREQ);
+
+        // ignore if we cannot disable the kernel time control loops (e.g. external clocks)
+        Error::ignore_not_supported(self.adjtime(&mut timex))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_tai(&self, tai_offset: i32) -> Result<(), Error> {
+        let mut timex = libc::timex {
+            modes: libc::ADJ_TAI,
+            constant: tai_offset as _,
+            ..EMPTY_TIMEX
+        };
+
+        self.clock_adjtime(&mut timex)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn set_tai(&self, _tai_offset: i32) -> Result<(), Error> {
+        Err(Error::NotSupported)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_tai(&self) -> Result<i32, Error> {
+        let mut timex = EMPTY_TIMEX;
+        if self.clock_adjtime(&mut timex).is_ok() {
+            Ok(timex.tai)
+        } else {
+            // hardware clock which doesn't have an offset anyway
+            Ok(0)
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn get_tai(&self) -> Result<i32, Error> {
+        Err(Error::NotSupported)
     }
 }
 
@@ -826,48 +790,6 @@ mod tests {
                 nanos: 0,
             })
             .unwrap();
-    }
-
-    #[test]
-    fn test_adjust_frequency_timex_identity() {
-        let frequency = 1;
-        let frequency_multiplier = 1.0;
-
-        let timex = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier);
-
-        assert_eq!(timex.freq, frequency);
-
-        assert_eq!(timex.modes, libc::MOD_FREQUENCY);
-    }
-
-    #[test]
-    fn test_adjust_frequency_timex_one_percent() {
-        let frequency = 20 << 16;
-        let frequency_multiplier = 1.0 + 5e-6;
-
-        let new_frequency = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier).freq;
-
-        assert_eq!(new_frequency, 983047);
-    }
-
-    #[test]
-    fn test_adjust_frequency_timex_clamp_low() {
-        let frequency = 20 << 16;
-        let frequency_multiplier = 0.5;
-
-        let new_frequency = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier).freq;
-
-        assert_eq!(new_frequency, (500 << 16) - 1);
-    }
-
-    #[test]
-    fn test_adjust_frequency_timex_clamp_high() {
-        let frequency = 20 << 16;
-        let frequency_multiplier = 1.5;
-
-        let new_frequency = UnixClock::adjust_frequency_timex(frequency, frequency_multiplier).freq;
-
-        assert_eq!(new_frequency, -((500 << 16) - 1));
     }
 
     #[cfg(target_os = "linux")]

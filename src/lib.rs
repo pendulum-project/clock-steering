@@ -40,7 +40,6 @@ pub enum LeapIndicator {
 
 /// Trait for reading information from and modifying an OS clock
 pub trait Clock {
-    #[cfg(feature = "std")]
     type Error: std::error::Error;
 
     // feature(error_in_core) https://github.com/rust-lang/rust/issues/103765
@@ -58,8 +57,14 @@ pub trait Clock {
     /// Change the frequency of the clock.
     /// Returns the time at which the change was applied.
     ///
-    /// The unit of the input is seconds (of drift) per second.
+    /// The unit of the input is milliseconds (of drift) per second,
+    /// compared to the "natural" frequency of the clock.
     fn set_frequency(&self, frequency: f64) -> Result<Timestamp, Self::Error>;
+
+    /// Get the frequency of the clock
+    /// The unit of the output is milliseconds (of drift) per second,
+    /// compared to the "natural" frequency of the clock.
+    fn get_frequency(&self) -> Result<f64, Self::Error>;
 
     /// Change the current time of the clock by an offset.
     /// Returns the time at which the change was applied.
@@ -67,6 +72,22 @@ pub trait Clock {
 
     /// Change the indicators for upcoming leap seconds.
     fn set_leap_seconds(&self, leap_status: LeapIndicator) -> Result<(), Self::Error>;
+
+    /// Disable all standard NTP kernel clock discipline. It is all your responsibility now.
+    ///
+    /// The disabled settings are:
+    ///
+    /// - [`libc::STA_PLL`]: kernel phase-locked loop
+    /// - [`libc::STA_FLL`]: kernel frequency-locked loop
+    /// - [`libc::STA_PPSTIME`]: pulse-per-second time
+    /// - [`libc::STA_PPSFREQ`]: pulse-per-second frequency discipline
+    fn disable_kernel_ntp_algorithm(&self) -> Result<(), Self::Error>;
+
+    /// Set the offset between TAI and UTC.
+    fn set_tai(&self, tai_offset: i32) -> Result<(), Self::Error>;
+
+    /// Get the offset between TAI and UTC.
+    fn get_tai(&self) -> Result<i32, Self::Error>;
 
     /// Provide the system with the current best estimates for the statistical
     /// error of the clock, and the maximum deviation due to frequency error and
