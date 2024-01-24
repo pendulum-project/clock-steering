@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
           persist-credentials: false
       - name: Install rust toolchain
@@ -47,7 +47,7 @@ jobs:
           - ""
     steps:
       - name: Checkout sources
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
           persist-credentials: false
       - name: Install ${{ matrix.rust }} toolchain
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
           persist-credentials: false
       - name: Install rust toolchain
@@ -89,7 +89,7 @@ jobs:
     name: Clippy & Test FreeBSD
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
       - name: test on freebsd
         uses: vmactions/freebsd-vm@d139f0eaa5d47d9fcc44f7ab1748574475d89565
         with:
@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
           persist-credentials: false
       - name: Install rust toolchain
