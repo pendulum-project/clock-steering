@@ -438,7 +438,10 @@ impl Clock for UnixClock {
     }
 
     fn set_leap_seconds(&self, leap_status: LeapIndicator) -> Result<(), Self::Error> {
-        self.update_status(|status| status | leap_status.as_status_bit())
+        self.update_status(|status| {
+            (status & !(libc::STA_UNSYNC | libc::STA_INS | libc::STA_DEL))
+                | leap_status.as_status_bit()
+        })
     }
 
     fn error_estimate_update(
