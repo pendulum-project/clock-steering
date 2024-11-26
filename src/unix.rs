@@ -98,52 +98,28 @@ impl UnixClock {
     /// hardware clock.
     #[cfg(target_os = "linux")]
     pub fn system_offset(&self) -> Result<(Timestamp, Timestamp, Timestamp), Error> {
+        use libc::{ptp_clock_time, ptp_sys_offset, PTP_SYS_OFFSET};
+
         let Some(fd) = self.fd else {
             return Err(Error::Invalid);
         };
 
-        // TODO: remove type and constant definitions once libc updates
-        #[repr(C)]
-        #[derive(Default, Clone, Copy, PartialEq, Eq)]
-        #[allow(non_camel_case_types)]
-        struct ptp_clock_time {
-            sec: libc::__s64,
-            nsec: libc::__u32,
-            reserved: libc::__u32,
-        }
-
-        #[repr(C)]
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        #[allow(non_camel_case_types)]
-        struct ptp_sys_offset {
-            n_samples: libc::c_uint,
-            rsv: [libc::c_uint; 3],
-            ts: [ptp_clock_time; 51],
-        }
-
-        // Needed as arrays larger than 32 elements don't implement default.
-        impl Default for ptp_sys_offset {
-            fn default() -> Self {
-                Self {
-                    n_samples: Default::default(),
-                    rsv: Default::default(),
-                    ts: [Default::default(); 51],
-                }
-            }
-        }
-
-        const PTP_SYS_OFFSET: libc::c_uint = 0x43403d05;
+        let default_ptp_clock_time = ptp_clock_time {
+            sec: 0,
+            nsec: 0,
+            reserved: 0,
+        };
 
         let mut offset = ptp_sys_offset {
             n_samples: 1,
-            ..Default::default()
+            rsv: [0u32; 3],
+            ts: [default_ptp_clock_time; 51],
         };
 
         // # Safety
-        // Safe since PTP_SYS_OFFSET expects as argument a mutable pointer to
-        // ptp_sys_offset and offset is valid during the call
-        if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset as *mut ptp_sys_offset) } != 0
-        {
+        //
+        // PTP_SYS_OFFSET receives a valid ptp_sys_offset mutable pointer
+        if unsafe { libc::ioctl(fd, PTP_SYS_OFFSET as _, &mut offset) } != 0 {
             let t1 = Self::CLOCK_TAI.now();
             let tp = self.now();
             let t2 = Self::CLOCK_TAI.now();
