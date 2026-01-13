@@ -489,6 +489,8 @@ pub enum Error {
     NoDevice,
     /// Clock operation requested is not supported by operating system.
     NotSupported,
+    /// Clock adjustment failed because the provided value was out of range
+    OutOfRange,
 }
 
 impl core::fmt::Display for Error {
@@ -501,6 +503,7 @@ impl core::fmt::Display for Error {
             Invalid => "Invalid operation requested",
             NoDevice => "Clock device has gone away",
             NotSupported => "Clock operation requested is not supported by operating system.",
+            OutOfRange => "Value out of range",
         };
 
         f.write_str(msg)
@@ -528,6 +531,7 @@ impl Error {
             Self::Invalid => libc::EINVAL,
             Self::NoDevice => libc::ENODEV,
             Self::NotSupported => libc::EOPNOTSUPP,
+            Self::OutOfRange => libc::ERANGE,
         }
     }
 }
@@ -563,6 +567,7 @@ fn convert_errno() -> Error {
         libc::EOPNOTSUPP => Error::NotSupported,
         libc::EPERM => Error::NoPermission,
         libc::EACCES => Error::NoAccess,
+        libc::ERANGE => Error::OutOfRange,
         libc::EFAULT => unreachable!("we always pass in valid (accessible) buffers"),
         // No other errors should occur
         other => {
