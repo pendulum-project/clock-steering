@@ -17,6 +17,42 @@ pub struct Timestamp {
     pub nanos: u32,
 }
 
+/// Clock adjustment capabilities
+///
+/// Describes the capabilities of a clock for frequency and offset adjustment.
+/// Values are specified in parts-per-billion (ppb) for frequency and nanoseconds for offset.
+/// For realtime clocks, the values are hard-coded in the OS kernel.
+/// For PTP clocks, the values are determined by the PTP hardware.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ClockCapabilities {
+    /// Maximum frequency adjustment capability in parts per million.
+    pub max_frequency_adjustment_ppb: u64,
+
+    /// Maximum offset adjustment capability in nanoseconds.
+    pub max_offset_adjustment_ns: u32,
+}
+
+impl Default for ClockCapabilities {
+    fn default() -> Self {
+        Self {
+            max_frequency_adjustment_ppb: 32_768_000_000, // 32768000 ppm
+            max_offset_adjustment_ns: 500_000_000,        // 0.5 seconds
+        }
+    }
+}
+
+impl ClockCapabilities {
+    /// Get the maximum frequency adjustment limit in ppm
+    pub const fn max_frequency_ppm(&self) -> u64 {
+        self.max_frequency_adjustment_ppb
+    }
+
+    /// Get the maximum offset adjustment limit in nanoseconds
+    pub const fn max_offset_ns(&self) -> u32 {
+        self.max_offset_adjustment_ns
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TimeOffset {
     pub seconds: libc::time_t,
@@ -53,6 +89,11 @@ pub trait Clock {
     /// The output [`Timestamp`] will be all zeros when the resolution is
     /// unavailable.
     fn resolution(&self) -> Result<Timestamp, Self::Error>;
+
+    /// Get the clock's adjustment capabilities.
+    ///
+    /// This returns information about the clock's capabilities.
+    fn capabilities(&self) -> Result<ClockCapabilities, Self::Error>;
 
     /// Change the frequency of the clock.
     /// Returns the time at which the change was applied.

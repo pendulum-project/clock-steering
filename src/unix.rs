@@ -1,4 +1,8 @@
-use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
+use crate::{Clock, ClockCapabilities, LeapIndicator, TimeOffset, Timestamp};
+#[cfg(target_os = "linux")]
+use nix::ioctl_read;
+#[cfg(target_os = "linux")]
+use std::mem::MaybeUninit;
 use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::{
@@ -12,6 +16,8 @@ pub struct UnixClock {
     clock: libc::clockid_t,
     #[cfg(target_os = "linux")]
     fd: Option<RawFd>,
+    #[cfg(target_os = "linux")]
+    capabilities: Option<ClockCapabilities>,
 }
 
 impl UnixClock {
@@ -33,6 +39,8 @@ impl UnixClock {
         clock: libc::CLOCK_REALTIME,
         #[cfg(target_os = "linux")]
         fd: None,
+        #[cfg(target_os = "linux")]
+        capabilities: None, // Will be detected on first use
     };
 
     /// TAI time on linux systems.
@@ -53,6 +61,7 @@ impl UnixClock {
     pub const CLOCK_TAI: Self = UnixClock {
         clock: libc::CLOCK_TAI,
         fd: None,
+        capabilities: None, // Will be detected on first use
     };
 
     /// Open a clock device.
@@ -77,7 +86,12 @@ impl UnixClock {
             .open(path)?;
 
         // we need an owned fd. the file will be closed when the process exits.
-        Ok(Self::safe_from_raw_fd(file.into_raw_fd()))
+        let mut clock = Self::safe_from_raw_fd(file.into_raw_fd());
+
+        // Attempt to detect PTP capabilities
+        clock.capabilities = clock.detect_ptp_capabilities().ok();
+
+        Ok(clock)
     }
 
     // Consume an fd and produce a clock id. Clock id is only valid
@@ -90,6 +104,7 @@ impl UnixClock {
         Self {
             clock,
             fd: Some(fd),
+            capabilities: None, // Will be set by caller
         }
     }
 
@@ -368,6 +383,34 @@ impl UnixClock {
     }
 }
 
+impl UnixClock {
+    #[cfg(target_os = "linux")]
+    fn detect_ptp_capabilities(&self) -> Result<ClockCapabilities, Error> {
+        if let Some(fd) = self.fd {
+            let mut caps = MaybeUninit::<PtpClockCaps>::zeroed();
+
+            match unsafe { ptp_clock_getcaps(fd, caps.as_mut_ptr()) } {
+                Ok(_) => {
+                    let caps = unsafe { caps.assume_init() };
+
+                    Ok(ClockCapabilities {
+                        max_frequency_adjustment_ppb: caps.max_adj as u64,
+                        max_offset_adjustment_ns: caps.max_phase_adj as u32,
+                    })
+                }
+                Err(nix::errno::Errno::ENOTTY) => {
+                    // Not a PTP device, use system clock defaults
+                    Ok(ClockCapabilities::default())
+                }
+                Err(_) => Err(convert_errno()),
+            }
+        } else {
+            // System clock, use system defaults
+            Ok(ClockCapabilities::default())
+        }
+    }
+}
+
 impl Clock for UnixClock {
     type Error = Error;
 
@@ -388,6 +431,23 @@ impl Clock for UnixClock {
         cerr(unsafe { libc::clock_getres(self.clock, &mut timespec) })?;
 
         Ok(current_time_timespec(timespec, Precision::Nano))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn capabilities(&self) -> Result<ClockCapabilities, Self::Error> {
+        // Return cached capabilities if available
+        if let Some(caps) = self.capabilities {
+            return Ok(caps);
+        }
+
+        // Try to detect PTP capabilities
+        self.detect_ptp_capabilities()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn capabilities(&self) -> Result<ClockCapabilities, Self::Error> {
+        // Non-Linux systems use system clock defaults
+        Ok(ClockCapabilities::default())
     }
 
     fn get_frequency(&self) -> Result<f64, Self::Error> {
@@ -583,6 +643,28 @@ fn cerr(c_int: libc::c_int) -> Result<(), Error> {
     } else {
         Ok(())
     }
+}
+
+// PTP clock structures and constants
+#[cfg(target_os = "linux")]
+const PTP_CLK_MAGIC: u8 = b'=';
+
+#[cfg(target_os = "linux")]
+ioctl_read!(ptp_clock_getcaps, PTP_CLK_MAGIC, 1, PtpClockCaps);
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub struct PtpClockCaps {
+    max_adj: libc::c_int,   // Maximum frequency adjustment in parts per billion
+    n_alarm: libc::c_int,   // Number of programmable alarms
+    n_ext_ts: libc::c_int,  // Number of external time stamp channels
+    n_per_out: libc::c_int, // Number of programmable periodic signals
+    pps: libc::c_int,       // Whether the clock supports a PPS callback
+    n_pins: libc::c_int,    // Number of input/output pins
+    cross_timestamping: libc::c_int, // Whether the clock supports precise system-device cross timestamps
+    adjust_phase: libc::c_int,       // Whether the clock supports adjust phase
+    max_phase_adj: libc::c_int,      // Maximum offset adjustment in nanoseconds
+    rsv: [libc::c_int; 11],          // Reserved for future use
 }
 
 pub(crate) enum Precision {
@@ -816,5 +898,16 @@ mod tests {
         let resolution = UnixClock::CLOCK_REALTIME.resolution().unwrap();
 
         assert_ne!(resolution, Timestamp::default());
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let clock = UnixClock::CLOCK_REALTIME;
+        let caps = clock.capabilities().unwrap();
+
+        // Check that the default frequency limit is reasonable
+        let max_freq = caps.max_frequency_ppm();
+        assert!(max_freq > 0);
+        assert!(max_freq >= 32768000); // At least 32768000 ppm
     }
 }

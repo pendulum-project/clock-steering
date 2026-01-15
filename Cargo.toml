@@ -13,3 +13,4 @@ rust-version = "1.66"
 
 [dependencies]
 libc = "0.2.165"
+nix = { version = "0.27", features = ["ioctl"] }
