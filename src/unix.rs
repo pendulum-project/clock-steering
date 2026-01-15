@@ -1,4 +1,8 @@
-use crate::{Clock, LeapIndicator, TimeOffset, Timestamp};
+#[cfg(target_os = "linux")]
+use crate::linux_ioctls::{ptp_clock_getcaps, PtpClockCaps};
+use crate::{Clock, ClockCapabilities, LeapIndicator, TimeOffset, Timestamp};
+#[cfg(target_os = "linux")]
+use std::mem::MaybeUninit;
 use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::{
@@ -77,7 +81,9 @@ impl UnixClock {
             .open(path)?;
 
         // we need an owned fd. the file will be closed when the process exits.
-        Ok(Self::safe_from_raw_fd(file.into_raw_fd()))
+        let clock = Self::safe_from_raw_fd(file.into_raw_fd());
+
+        Ok(clock)
     }
 
     // Consume an fd and produce a clock id. Clock id is only valid
@@ -368,6 +374,32 @@ impl UnixClock {
     }
 }
 
+impl UnixClock {
+    #[cfg(target_os = "linux")]
+    fn detect_ptp_capabilities(&self) -> Result<ClockCapabilities, Error> {
+        if let Some(fd) = self.fd {
+            let mut caps = MaybeUninit::<PtpClockCaps>::zeroed();
+
+            if unsafe { ptp_clock_getcaps(fd, caps.as_mut_ptr()) } == 0 {
+                let caps = unsafe { caps.assume_init() };
+
+                Ok(ClockCapabilities {
+                    max_frequency_adjustment_ppm: caps.max_adj as f64 / 1000.0,
+                    max_offset_adjustment_ns: caps.max_phase_adj as u32,
+                })
+            } else if error_number() == libc::ENOTTY {
+                // Not a PTP device, use system clock defaults
+                Ok(ClockCapabilities::default())
+            } else {
+                Err(convert_errno())
+            }
+        } else {
+            // System clock, use system defaults
+            Ok(ClockCapabilities::default())
+        }
+    }
+}
+
 impl Clock for UnixClock {
     type Error = Error;
 
@@ -388,6 +420,17 @@ impl Clock for UnixClock {
         cerr(unsafe { libc::clock_getres(self.clock, &mut timespec) })?;
 
         Ok(current_time_timespec(timespec, Precision::Nano))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn capabilities(&self) -> Result<ClockCapabilities, Self::Error> {
+        self.detect_ptp_capabilities()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn capabilities(&self) -> Result<ClockCapabilities, Self::Error> {
+        // Non-Linux systems use system clock defaults
+        Ok(ClockCapabilities::default())
     }
 
     fn get_frequency(&self) -> Result<f64, Self::Error> {
@@ -816,5 +859,12 @@ mod tests {
         let resolution = UnixClock::CLOCK_REALTIME.resolution().unwrap();
 
         assert_ne!(resolution, Timestamp::default());
+    }
+
+    #[test]
+    fn test_capabilities() {
+        let clock = UnixClock::CLOCK_REALTIME;
+
+        assert!(clock.capabilities().is_ok());
     }
 }

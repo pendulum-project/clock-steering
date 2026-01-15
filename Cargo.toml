@@ -11,5 +11,9 @@ rust-version = "1.66"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[example]]
+name = "basic"
+required-features = []
+
 [dependencies]
 libc = "0.2.165"
