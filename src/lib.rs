@@ -3,6 +3,9 @@
 //! This code is used in our implementations of NTP [ntpd-rs](https://github.com/pendulum-project/ntpd-rs) and PTP [statime](https://github.com/pendulum-project/statime).
 use core::time::Duration;
 
+#[cfg(target_os = "linux")]
+mod linux_ioctls;
+
 #[cfg(unix)]
 pub mod unix;
 
@@ -15,6 +18,30 @@ pub struct Timestamp {
     pub seconds: libc::time_t,
     /// Nanos must be between 0 and 999999999 inclusive
     pub nanos: u32,
+}
+
+/// Clock adjustment capabilities
+///
+/// Describes the capabilities of a clock for frequency and offset adjustment.
+/// Values are specified in parts-per-million (ppm) for frequency and nanoseconds for offset.
+/// For realtime clocks, the values are hard-coded in the OS kernel.
+/// For PTP clocks, the values are determined by the PTP hardware.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockCapabilities {
+    /// Maximum frequency adjustment capability in parts per million.
+    pub max_frequency_adjustment_ppm: f64,
+
+    /// Maximum offset adjustment capability in nanoseconds.
+    pub max_offset_adjustment_ns: u32,
+}
+
+impl Default for ClockCapabilities {
+    fn default() -> Self {
+        Self {
+            max_frequency_adjustment_ppm: 500.0,   // 500 ppm
+            max_offset_adjustment_ns: 500_000_000, // 0.5 seconds
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -53,6 +80,11 @@ pub trait Clock {
     /// The output [`Timestamp`] will be all zeros when the resolution is
     /// unavailable.
     fn resolution(&self) -> Result<Timestamp, Self::Error>;
+
+    /// Get the clock's adjustment capabilities.
+    ///
+    /// This returns information about the clock's capabilities.
+    fn capabilities(&self) -> Result<ClockCapabilities, Self::Error>;
 
     /// Change the frequency of the clock.
     /// Returns the time at which the change was applied.
