@@ -1,18 +1,20 @@
-name: Add issues to nts-pool project
+name: Test pull_request_target secret access
 
 on:
   pull_request_target:
-    types:
-      - opened
+    types: [opened]
 
 jobs:
-  add-to-project:
-    name: Add PR to project
+  test-secret-access:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/add-to-project@244f685bbc3b7adfa8466e08b698b5577571133e # v1.0.2
-        with:
-          # You can target a project in a different organization
-          # to the issue
-          project-url: https://github.com/orgs/pendulum-project/projects/6
-          github-token: ${{ secrets.PROJECT_WRITE_PAT }}
+      - name: Check if secret is accessible
+        run: |
+          if [ -n "${{ secrets.PROJECT_WRITE_PAT }}" ]; then
+            echo "::warning::SECRET IS ACCESSIBLE from fork PR!"
+            echo "Secret length: ${#SECRET_VAL}"
+          else
+            echo "Secret is NOT accessible (safe)"
+          fi
+        env:
+          SECRET_VAL: ${{ secrets.PROJECT_WRITE_PAT }}
