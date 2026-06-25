@@ -4,8 +4,8 @@ description = "Functionality for manual clock steering"
 version = "0.2.1"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/pendulum-project/timestamped-socket"
-homepage = "https://github.com/pendulum-project/timestamped-socket"
+repository = "https://github.com/pendulum-project/clock-steering"
+homepage = "https://github.com/pendulum-project/clock-steering"
 publish = true
 rust-version = "1.66"
 
