@@ -16,4 +16,4 @@ name = "basic"
 required-features = []
 
 [dependencies]
-libc = "0.2.165"
+libc = "0.2.183"
