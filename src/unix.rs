@@ -221,7 +221,7 @@ impl UnixClock {
 
     #[cfg_attr(target_os = "linux", allow(unused))]
     fn clock_gettime(&self) -> Result<libc::timespec, Error> {
-        let mut timespec = EMPTY_TIMESPEC;
+        let mut timespec = libc::timespec::default();
 
         // # Safety
         //
@@ -415,7 +415,7 @@ impl Clock for UnixClock {
     }
 
     fn resolution(&self) -> Result<Timestamp, Self::Error> {
-        let mut timespec = EMPTY_TIMESPEC;
+        let mut timespec = libc::timespec::default();
 
         cerr(unsafe { libc::clock_getres(self.clock, &mut timespec) })?;
 
@@ -675,11 +675,6 @@ fn current_time_timeval(timespec: libc::timeval, precision: Precision) -> Timest
 
     Timestamp { seconds, nanos }
 }
-
-const EMPTY_TIMESPEC: libc::timespec = libc::timespec {
-    tv_sec: 0,
-    tv_nsec: 0,
-};
 
 // Libc has no good other way of obtaining this, so let's at least make our
 // functions more readable.
